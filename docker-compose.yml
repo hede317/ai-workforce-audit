@@ -1,0 +1,59 @@
+services:
+  db:
+    image: pgvector/pgvector:pg16
+    container_name: ai-workforce-pg
+    environment:
+      POSTGRES_USER: ai_workforce
+      POSTGRES_PASSWORD: ai_workforce
+      POSTGRES_DB: ai_workforce
+    ports:
+      - "5434:5432"
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ai_workforce"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  backend:
+    build: ./backend
+    container_name: ai-workforce-api
+    env_file: .env
+    environment:
+      DATABASE_URL: postgres://ai_workforce:ai_workforce@db:5432/ai_workforce
+    ports:
+      - "8600:8600"
+    depends_on:
+      db:
+        condition: service_healthy
+    volumes:
+      - media_data:/app/data/media
+
+  n8n:
+    image: n8nio/n8n:latest
+    container_name: ai-workforce-n8n
+    ports:
+      - "3210:5678"
+    environment:
+      - N8N_BASIC_AUTH_ACTIVE=true
+      - N8N_BASIC_AUTH_USER=admin
+      - N8N_BASIC_AUTH_PASSWORD=change-me-n8n
+      - GENERIC_TIMEZONE=Asia/Shanghai
+    volumes:
+      - n8n_data:/home/node/.n8n
+
+  frontend:
+    build: ./frontend
+    container_name: ai-workforce-web
+    environment:
+      - NEXT_PUBLIC_API_BASE=http://localhost:8600
+    ports:
+      - "8610:3000"
+    depends_on:
+      - backend
+
+volumes:
+  pg_data:
+  n8n_data:
+  media_data:

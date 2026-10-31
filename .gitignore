@@ -1,0 +1,12 @@
+# 构建产物
+backend/target/
+frontend/node_modules/
+frontend/.next/
+
+# 环境与数据
+.env
+data/
+*.log
+
+# 系统杂项
+.DS_Store
