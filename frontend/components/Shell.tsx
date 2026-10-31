@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
-import { Bot, BrainCircuit, FileText, Globe, LayoutDashboard, ListChecks, LogOut, Megaphone, ScrollText, SendHorizonal, ShieldCheck, ShoppingBag, Sparkles, UserRoundPlus } from "lucide-react";
+import { Bot, BrainCircuit, FileText, Globe, LayoutDashboard, ListChecks, LogOut, Megaphone, Radar as RadarIcon, ScrollText, SendHorizonal, ShieldCheck, ShoppingBag, Sparkles, UserRoundPlus } from "lucide-react";
 import { clearToken, get } from "@/lib/api";
 import { LOCALES, useLocale } from "@/lib/i18n";
 import { cn } from "@/lib/cn";
@@ -15,6 +15,7 @@ const NAV = [
   { href: "/publishing", label: "nav.publishing", icon: SendHorizonal },
   { href: "/products", label: "nav.products", icon: ShoppingBag },
   { href: "/leads", label: "nav.leads", icon: UserRoundPlus },
+  { href: "/radar", label: "nav.radar", icon: RadarIcon },
   { href: "/campaigns", label: "nav.mkt", icon: Megaphone },
   { href: "/tasks", label: "nav.tasks", icon: ListChecks },
   { href: "/agents", label: "nav.agents", icon: Bot },

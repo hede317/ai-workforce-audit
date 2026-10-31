@@ -2,6 +2,7 @@ mod agents;
 mod business;
 mod core;
 mod data;
+mod listening;
 
 use crate::auth::new_id;
 use crate::state::AppState;
@@ -47,6 +48,12 @@ pub fn build_router(state: AppState) -> Router {
         .route("/api/v1/contents/:id/publish", post(business::publish_content))
         // 线索
         .route("/api/v1/leads", get(business::list_leads).post(business::create_lead))
+        // 舆情雷达
+        .route("/api/v1/listening/keywords", get(listening::list_keywords).post(listening::add_keyword))
+        .route("/api/v1/listening/keywords/:id", axum::routing::delete(listening::delete_keyword))
+        .route("/api/v1/listening/signals", get(listening::list_signals))
+        .route("/api/v1/listening/signals/:id/to-topic", post(listening::signal_to_topic))
+        .route("/api/v1/listening/signals/:id/to-lead", post(listening::signal_to_lead))
         .route("/api/v1/leads/:id/events", get(business::list_lead_events).post(business::add_lead_event))
         // 活动
         .route("/api/v1/campaigns", get(business::list_campaigns).post(business::create_campaign))

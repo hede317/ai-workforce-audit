@@ -66,6 +66,21 @@ pub async fn run(pool: &PgPool, cfg: &Config) -> Result<(), anyhow::Error> {
             .await?;
     }
 
+    // 舆情雷达示例关键词（首次落库，用户可删改）
+    let kw_count: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM listening_keywords").fetch_one(pool).await?;
+    if kw_count.0 == 0 {
+        let kws = [
+            ("ERP", "巴基斯坦中国企业IT/信息化外派机会", "巴基斯坦 ERP 招聘"),
+            ("ERP", "刚果金矿业信息化", "矿业 信息化 招标"),
+            ("EDU", "AI技能培训招生", "AI 培训 企业员工"),
+            ("ECOM", "跨境电商选品趋势", "TikTok 带货 爆品"),
+        ];
+        for (bu, goal, kw) in kws {
+            sqlx::query("INSERT INTO listening_keywords (id, business_unit_code, goal_text, keyword) VALUES ($1,$2,$3,$4)")
+                .bind(new_id()).bind(bu).bind(goal).bind(kw).execute(pool).await?;
+        }
+    }
+
     // 管理员（已存在则不动，尊重已改密码）
     let exists: Option<(String,)> = sqlx::query_as("SELECT id FROM users WHERE username=$1").bind(&cfg.admin_username).fetch_optional(pool).await?;
     if exists.is_none() {

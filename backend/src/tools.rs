@@ -44,6 +44,9 @@ pub const TOOL_DEFS: &[ToolDef] = &[
     ToolDef { code: "crm.create_lead", name: "线索创建", category: "crm", description: "写入客户线索并记录事件", permission_level: "AUTO", input_schema: r#"{"name":"string?","email":"string?","phone":"string?","business_unit_code":"string?","source_channel":"string?","summary":"string?"}"# },
     ToolDef { code: "email.send_draft", name: "邮件发送", category: "email", description: "通过SMTP发送邮件（红线：必须审批）", permission_level: "APPROVAL", input_schema: r#"{"to":"string","subject":"string","body":"string"}"# },
     ToolDef { code: "ecommerce.score_product", name: "选品AI评分", category: "ecommerce", description: "对选品候选做需求/竞争/毛利分析并回写评分（需AI）", permission_level: "AUTO", input_schema: r#"{"product_id":"string"}"# },
+    ToolDef { code: "listen.scan_keywords", name: "舆情扫描", category: "listening", description: "按关键词库扫描Google News RSS等公开源，产出需求信号（TikTok/抖音官方API待配置，走人工导入）", permission_level: "AUTO", input_schema: r#"{"business_unit_code":"string?"}"# },
+    ToolDef { code: "listen.import_snippet", name: "舆情导入", category: "listening", description: "粘贴抖音/TikTok文案、评论或链接文本，提炼需求信号", permission_level: "AUTO", input_schema: r#"{"text":"string","business_unit_code":"string?","platform":"string?"}"# },
+    ToolDef { code: "content.video_script", name: "视频脚本起草", category: "content", description: "按选题生成45-60秒口播视频脚本（需AI）", permission_level: "AUTO", input_schema: r#"{"topic":"string","business_unit_code":"string?","language":"string?"}"# },
     ToolDef { code: "data.daily_report", name: "经营日报", category: "data", description: "汇总当日经营数据生成Markdown日报", permission_level: "AUTO", input_schema: r#"{}"# },
 ];
 
@@ -89,6 +92,9 @@ pub async fn dispatch(code: &str, args: Value, ctx: &ToolCtx<'_>) -> Result<Valu
         "crm.create_lead" => crm_create_lead(state, &args).await,
         "email.send_draft" => email_send(state, &args).await,
         "ecommerce.score_product" => score_product(state, &args).await,
+        "listen.scan_keywords" => listen_scan(state, &args).await,
+        "listen.import_snippet" => listen_import(state, ctx, &args).await,
+        "content.video_script" => video_script(state, ctx, &args).await,
         "data.daily_report" => daily_report(state).await,
         _ => Err(AppError::bad_request(format!("工具 {code} 未实现"))),
     }
@@ -578,4 +584,165 @@ pub async fn embed_memory(state: &AppState, memory_id: &str, title: &str, conten
             .execute(state.pool())
             .await;
     }
+}
+
+
+// ---------- 舆情雷达（关键词→信号→选题/线索/脚本） ----------
+
+fn percent_encode(s: &str) -> String {
+    let mut out = String::new();
+    for b in s.as_bytes() {
+        match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => out.push(*b as char),
+            _ => out.push_str(&format!("%{:02X}", b)),
+        }
+    }
+    out
+}
+
+fn extract_tag(chunk: &str, tag: &str) -> Option<String> {
+    let open = format!("<{}", tag);
+    let start = chunk.find(&open)?;
+    let rest = &chunk[start..];
+    let gt = rest.find('>')?;
+    let after = &rest[gt + 1..];
+    let end = after.find(&format!("</{}", tag))?;
+    let mut v = after[..end].to_string();
+    if let Some(s) = v.strip_prefix("<![CDATA[") {
+        v = s.trim_end_matches("]]>").to_string();
+    }
+    Some(v.trim().to_string())
+}
+
+async fn listen_scan(state: &AppState, args: &Value) -> Result<Value, AppError> {
+    let bu = take_str(args, "business_unit_code");
+    // 取启用关键词
+    let kws: Vec<(String, String, Option<String>, String)> = if let Some(b) = &bu {
+        sqlx::query_as("SELECT id, keyword, goal_text, business_unit_code FROM listening_keywords WHERE enabled AND ($1::text IS NULL OR business_unit_code=$1) ORDER BY created_at DESC LIMIT 20")
+            .bind(b).fetch_all(state.pool()).await?
+    } else {
+        sqlx::query_as("SELECT id, keyword, goal_text, business_unit_code FROM listening_keywords WHERE enabled ORDER BY created_at DESC LIMIT 20")
+            .fetch_all(state.pool()).await?
+    };
+    if kws.is_empty() {
+        return Err(AppError::bad_request("关键词库为空：先在舆情雷达添加关键词"));
+    }
+    let mut created = Vec::new();
+    let mut skipped = 0usize;
+    'kw: for (_kid, keyword, _goal, kw_bu) in kws.iter().take(6) {
+        let url = format!(
+            "https://news.google.com/rss/search?q={}&hl=zh-CN&gl=CN&ceid=CN:zh-Hans",
+            percent_encode(keyword)
+        );
+        let (status, body) = match fetch_limited(state, &url, 512 * 1024).await {
+            Ok(v) => v,
+            Err(_) => continue, // 单源失败不阻塞整体
+        };
+        if status != 200 {
+            continue;
+        }
+        let mut count = 0;
+        for chunk in body.split("<item>").skip(1) {
+            if count >= 6 {
+                continue 'kw;
+            }
+            let title = extract_tag(chunk, "title").unwrap_or_default();
+            let link = extract_tag(chunk, "link").unwrap_or_default();
+            let date = extract_tag(chunk, "pubDate").unwrap_or_default();
+            let src = extract_tag(chunk, "source").unwrap_or_else(|| "news".into());
+            if title.is_empty() || link.is_empty() {
+                continue;
+            }
+            let dup: Option<(String,)> = sqlx::query_as("SELECT id FROM listening_signals WHERE url=$1")
+                .bind(&link).fetch_optional(state.pool()).await?;
+            if dup.is_some() {
+                skipped += 1;
+                continue;
+            }
+            // 离线评分：标题含关键词+2；48小时内+2（RFC2822 可解析时）
+            let mut score = 5i32;
+            if title.contains(keyword.as_str()) {
+                score += 2;
+            }
+            if chrono::DateTime::parse_from_rfc2822(&date).map(|d| d.timestamp() > chrono::Utc::now().timestamp() - 48 * 3600).unwrap_or(false) {
+                score += 2;
+            }
+            let id = new_id();
+            sqlx::query("INSERT INTO listening_signals (id, business_unit_code, keyword, platform, title, url, summary, score) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)")
+                .bind(&id)
+                .bind(kw_bu)
+                .bind(keyword)
+                .bind(&src)
+                .bind(truncate(&title, 240))
+                .bind(&link)
+                .bind(truncate(&format!("{} · {}", date, keyword), 300))
+                .bind(score.min(10))
+                .execute(state.pool())
+                .await?;
+            created.push(json!({"id": id, "title": truncate(&title, 60), "score": score}));
+            count += 1;
+        }
+    }
+    Ok(json!({"output": format!("扫描完成：新增{}条信号，去重跳过{}条（TikTok/抖音官方搜索API待配置，暂走人工导入）", created.len(), skipped), "signals": created, "mode": "news_rss"}))
+}
+
+async fn listen_import(state: &AppState, ctx: &ToolCtx<'_>, args: &Value) -> Result<Value, AppError> {
+    let text = take_str(args, "text").ok_or_else(|| AppError::bad_request("缺少 text（粘贴文案/评论/链接）"))?;
+    let bu = take_str(args, "business_unit_code");
+    let platform = take_str(args, "platform").unwrap_or_else(|| "manual".into());
+    let head = truncate(text.trim(), 40);
+    // AI 优先提炼；未配置 AI 走确定性模板（明确标注）
+    let (title, summary, score, mode) = if state.0.cfg.ai_available() {
+        match call_ai(state, "你是舆情分析师，从素材提炼商业需求信号。只输出JSON。", &format!("素材：{text}\n\n输出：{{\"title\":\"一句信号标题\",\"summary\":\"两句话：谁需要什么\",\"score\":1-10}}"), 800).await {
+            Ok(reply) => {
+                let parsed = crate::ai::extract_json(&reply.text).unwrap_or(json!({}));
+                (
+                    parsed.get("title").and_then(|v| v.as_str()).unwrap_or(&head).to_string(),
+                    parsed.get("summary").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+                    parsed.get("score").and_then(|v| v.as_i64()).unwrap_or(6) as i32,
+                    "ai",
+                )
+            }
+            Err(_) => (head.clone(), truncate(&text, 200), 5, "template_offline".into()),
+        }
+    } else {
+        (head.clone(), truncate(&text, 200), 5, "template_offline".into())
+    };
+    let id = new_id();
+    sqlx::query("INSERT INTO listening_signals (id, business_unit_code, platform, title, url, summary, score) VALUES ($1,$2,$3,$4,$5,$6,$7)")
+        .bind(&id)
+        .bind(bu.unwrap_or_default())
+        .bind(&platform)
+        .bind(truncate(&title, 240))
+        .bind(take_str(args, "url").unwrap_or_default())
+        .bind(truncate(&summary, 400))
+        .bind(score)
+        .execute(state.pool())
+        .await?;
+    let _ = ctx;
+    Ok(json!({"output": format!("信号已入库：{title}"), "signal_id": id, "mode": mode}))
+}
+
+async fn video_script(state: &AppState, ctx: &ToolCtx<'_>, args: &Value) -> Result<Value, AppError> {
+    let topic = take_str(args, "topic").ok_or_else(|| AppError::bad_request("缺少 topic"))?;
+    let lang = take_str(args, "language").unwrap_or_else(|| "zh".into());
+    let reply = call_ai(
+        state,
+        "你是短视频编导。输出45-60秒口播视频脚本：第一行【钩子】，然后分镜正文（每行一个镜头），最后一行【CTA】。",
+        &format!("选题：{topic}\n语言：{lang}"),
+        1500,
+    )
+    .await?;
+    let id = new_id();
+    let title = format!("【视频脚本】{topic}");
+    sqlx::query("INSERT INTO content_assets (id, business_unit_code, content_type, title, body, language, status, source_task_id) VALUES ($1,$2,'video_script',$3,$4,$5,'DRAFT',$6)")
+        .bind(&id)
+        .bind(take_str(args, "business_unit_code").unwrap_or_default())
+        .bind(truncate(&title, 200))
+        .bind(&reply.text)
+        .bind(&lang)
+        .bind(&ctx.task_id)
+        .execute(state.pool())
+        .await?;
+    Ok(json!({"output": format!("视频脚本已入库：{title}"), "content_id": id, "tokens": reply.tokens, "mode": "ai"}))
 }

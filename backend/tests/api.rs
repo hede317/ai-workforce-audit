@@ -402,3 +402,26 @@ async fn audit2_operator_isolation() {
     let (st, _) = send(app.clone(), req("GET", &format!("/api/v1/commander/goals/{root_id}"), Some(&op_token), None)).await;
     assert_eq!(st, StatusCode::NOT_FOUND);
 }
+
+#[tokio::test]
+async fn listening_keyword_to_signal_to_topic() {
+    let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    let (app, pool) = setup().await;
+    let token = login(&app).await;
+
+    // 1. 加关键词
+    let (_, k) = send(app.clone(), req("POST", "/api/v1/listening/keywords", Some(&token), Some(json!({"keyword": "矿业 信息化", "goal_text": "中企IT外派", "business_unit_code": "ERP"})))).await;
+    assert!(k["data"]["id"].as_str().is_some(), "{k}");
+
+    // 2. 人工导入素材 → 信号（AI未配置走模板模式，诚实标注）
+    let (_, r) = send(app.clone(), req("POST", "/api/v1/tools/listen.import_snippet/invoke", Some(&token), Some(json!({"text": "刚果金中资矿业招标信息化主管，要求懂ERP和地磅系统", "business_unit_code": "ERP", "platform": "manual"})))).await;
+    assert!(r["success"].as_bool().unwrap(), "{r}");
+    assert_eq!(r["data"]["mode"], "template_offline");
+    let sig_id = r["data"]["signal_id"].as_str().unwrap().to_string();
+
+    // 3. 信号 → 选题，状态转 CONVERTED
+    let (_, tt) = send(app.clone(), req("POST", &format!("/api/v1/listening/signals/{sig_id}/to-topic"), Some(&token), None)).await;
+    assert!(tt["data"]["topic_id"].as_str().is_some(), "{tt}");
+    let st: (String,) = sqlx::query_as("SELECT status FROM listening_signals WHERE id=$1").bind(&sig_id).fetch_one(&pool).await.unwrap();
+    assert_eq!(st.0, "CONVERTED");
+}
