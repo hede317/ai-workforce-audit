@@ -11,6 +11,8 @@ pub struct Inner {
     pub http: reqwest::Client,
     /// 禁用重定向的客户端：外部抓取专用（防重定向落入内网，审计#10）
     pub http_no_redirect: reqwest::Client,
+    /// 长超时客户端：MPT出片等分钟级任务专用
+    pub http_long: reqwest::Client,
 }
 
 impl AppState {
@@ -24,7 +26,11 @@ impl AppState {
             .user_agent("HedeYou-AI-Workforce/0.1")
             .redirect(reqwest::redirect::Policy::none())
             .build()?;
-        Ok(Self(Arc::new(Inner { cfg, pool, http, http_no_redirect })))
+        let http_long = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(2500))
+            .user_agent("HedeYou-AI-Workforce/0.1")
+            .build()?;
+        Ok(Self(Arc::new(Inner { cfg, pool, http, http_no_redirect, http_long })))
     }
 
     pub fn pool(&self) -> &PgPool {

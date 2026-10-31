@@ -47,6 +47,7 @@ pub const TOOL_DEFS: &[ToolDef] = &[
     ToolDef { code: "listen.scan_keywords", name: "舆情扫描", category: "listening", description: "按关键词库扫描Google News RSS等公开源，产出需求信号（TikTok/抖音官方API待配置，走人工导入）", permission_level: "AUTO", input_schema: r#"{"business_unit_code":"string?"}"# },
     ToolDef { code: "listen.import_snippet", name: "舆情导入", category: "listening", description: "粘贴抖音/TikTok文案、评论或链接文本，提炼需求信号", permission_level: "AUTO", input_schema: r#"{"text":"string","business_unit_code":"string?","platform":"string?"}"# },
     ToolDef { code: "content.video_script", name: "视频脚本起草", category: "content", description: "按选题生成45-60秒口播视频脚本（需AI）", permission_level: "AUTO", input_schema: r#"{"topic":"string","business_unit_code":"string?","language":"string?"}"# },
+    ToolDef { code: "pipeline.content_full", name: "内容一条龙", category: "pipeline", description: "选题→口播稿→MPT自动出片(9:16+字幕)→发布包待人工上传（发布仍走红线审批）", permission_level: "AUTO", input_schema: r#"{"topic":"string","business_unit_code":"string?","script":"string?","voice":"string?","terms":"string?"}"# },
     ToolDef { code: "botarmy.lookup", name: "BOT军团SOP查询", category: "botarmy", description: "查DSH军团50岗清单或指定岗位的作业流程", permission_level: "AUTO", input_schema: r#"{"bot":"string?","query":"string?"}"# },
     ToolDef { code: "botarmy.dispatch", name: "BOT军团派活", category: "botarmy", description: "向DSH军团队列投派活工单（审批制）", permission_level: "APPROVAL", input_schema: r#"{"team":"string","bot":"string","subject":"string","content":"string"}"# },
     ToolDef { code: "data.daily_report", name: "经营日报", category: "data", description: "汇总当日经营数据生成Markdown日报", permission_level: "AUTO", input_schema: r#"{}"# },
@@ -94,6 +95,7 @@ pub async fn dispatch(code: &str, args: Value, ctx: &ToolCtx<'_>) -> Result<Valu
         "crm.create_lead" => crm_create_lead(state, &args).await,
         "email.send_draft" => email_send(state, &args).await,
         "ecommerce.score_product" => score_product(state, &args).await,
+        "pipeline.content_full" => pipeline_content_full(state, &args).await,
         "botarmy.lookup" => botarmy_lookup(&args),
         "botarmy.dispatch" => botarmy_dispatch(&args).await,
         "listen.scan_keywords" => listen_scan(state, &args).await,
@@ -345,7 +347,11 @@ async fn video_mpt(state: &AppState, args: &Value) -> Result<Value, AppError> {
     if parsed.scheme() != "http" && parsed.scheme() != "https" {
         return Err(AppError::bad_request("MPT_WORKER_URL 仅允许 http/https"));
     }
-    let resp = state.0.http_no_redirect.post(format!("{url}/render_mpt")).json(args).send().await
+    let mut req = state.0.http_long.post(format!("{url}/render-mpt")).json(args);
+    if !state.0.cfg.mpt_token.is_empty() {
+        req = req.header("X-AIOS-Token", &state.0.cfg.mpt_token);
+    }
+    let resp = req.send().await
         .map_err(|e| AppError::internal(format!("MPT服务连接失败: {e}")))?;
     let payload: Value = resp.json().await.unwrap_or(json!({}));
     Ok(json!({"output": "已提交MPT出片任务", "provider_response": payload, "mode": "mpt"}))
@@ -868,4 +874,62 @@ async fn botarmy_dispatch(args: &Value) -> Result<Value, AppError> {
     );
     std::fs::write(&file, doc).map_err(|e| AppError::internal(format!("工单写入失败: {e}")))?;
     Ok(json!({"output": format!("工单已投递：{}（岗位 {}）", file.display(), bot), "ticket": file.display().to_string(), "mode": "dispatched"}))
+}
+
+
+// ---------- 内容一条龙（舆情→选题→出片→待审发布包） ----------
+
+async fn pipeline_content_full(state: &AppState, args: &Value) -> Result<Value, AppError> {
+    let topic = take_str(args, "topic").ok_or_else(|| AppError::bad_request("缺少 topic"))?;
+    let bu = take_str(args, "business_unit_code").unwrap_or_else(|| "ERP".into());
+    // ① 选题入库
+    let tid = new_id();
+    sqlx::query("INSERT INTO content_topics (id, business_unit_code, title, status) VALUES ($1,$2,$3,'NEW')")
+        .bind(&tid).bind(&bu).bind(truncate(&topic, 200))
+        .execute(state.pool()).await?;
+    // ② 口播稿：传入优先；否则确定性模板（短句、无网址，符合MPT字幕规则）
+    let script = take_str(args, "script").unwrap_or_else(|| format!(
+        "今天说一个很多人关心的话题。\n{topic}。\n多数人的做法是，自己动手，事事亲为。\n更好的做法是，把目标交给一支AI团队。\n幕僚长听懂意图，专员自动拆解执行。\n每一步都有审批，每一步都有留痕。\n我只批关键动作，其他全自动。\n一个人，也能跑一家代运营公司。\n想看怎么搭，评论区扣个团队。"
+    ).replace("{topic}", &topic));
+    // ③ MPT 出片（同步，最长2400s）
+    let url = state.0.cfg.mpt_worker_url.trim_end_matches('/');
+    if url.is_empty() {
+        return Err(AppError::not_configured("MPT出片服务 (MPT_WORKER_URL)"));
+    }
+    let mpt_args = json!({
+        "subject": truncate(&topic, 60),
+        "script": script,
+        "voice": take_str(args, "voice").unwrap_or_else(|| "zh-CN-YunxiNeural-Male".into()),
+        "aspect": "9:16",
+        "terms": take_str(args, "terms").unwrap_or_else(|| "business,office,technology,city".into()),
+        "subtitles": true,
+    });
+    let mut req = state.0.http_long.post(format!("{url}/render-mpt")).json(&mpt_args);
+    if !state.0.cfg.mpt_token.is_empty() {
+        req = req.header("X-AIOS-Token", &state.0.cfg.mpt_token);
+    }
+    let resp = req.send().await.map_err(|e| AppError::internal(format!("MPT服务连接失败: {e}")))?;
+    let payload: Value = resp.json().await.unwrap_or(json!({}));
+    if payload.get("ok").and_then(|v| v.as_bool()) != Some(true) {
+        return Err(AppError::internal(format!("MPT出片失败: {}", payload.get("error").and_then(|v| v.as_str()).unwrap_or("未知"))));
+    }
+    let video_path = payload.get("video").and_then(|v| v.as_str()).unwrap_or("").to_string();
+    let seconds = payload.get("seconds").and_then(|v| v.as_f64()).unwrap_or(0.0);
+    // ④ 发布包进人工队列（红线：上传发布由人执行）
+    let pid = new_id();
+    let payload_pkg = json!({
+        "title": truncate(&topic, 80),
+        "content_asset_id": tid,
+        "video_path": video_path,
+        "mode": "human_upload",
+        "pipeline": true,
+        "checklist": ["看片验收", "平台上传", "AI内容标注", "发布后回填链接到发布中心"],
+    });
+    sqlx::query("INSERT INTO publishing_tasks (id, content_asset_id, platform, status, payload) VALUES ($1,$2,'douyin','HUMAN_QUEUE',$3)")
+        .bind(&pid).bind(&tid).bind(&payload_pkg)
+        .execute(state.pool()).await?;
+    Ok(json!({
+        "output": format!("一条龙完成：选题→口播稿→成片({}秒渲染)→发布包待上传", seconds),
+        "topic_id": tid, "video": video_path, "publishing_task_id": pid, "mode": "pipeline",
+    }))
 }
