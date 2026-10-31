@@ -296,3 +296,77 @@ pub async fn record_publishing_result(
     audit(state.pool(), &user.0.sub, "publish_result", "publishing_task", &id, json!({"url": body.get("published_url")})).await;
     ok(json!({"id": rid, "publishing_task_id": id, "status": "PUBLISHED"}))
 }
+
+// ---------- 选品中心（ECOM） ----------
+
+pub async fn list_products(State(state): State<AppState>, _user: AuthUser, Query(q): Query<HashMap<String, String>>) -> ApiResult {
+    let rows: Vec<(String, Option<String>, String, Option<String>, f64, f64, f64, i32, i32, String, Option<String>)> =
+        sqlx::query_as("SELECT id, business_unit_code, title, source_url, price, est_cost, est_margin_pct, demand_score, competition_score, status, decision_note FROM product_candidates ORDER BY updated_at DESC LIMIT 200")
+            .fetch_all(state.pool())
+            .await?;
+    let mut items: Vec<Value> = rows
+        .into_iter()
+        .map(|(id, bu, title, url, price, cost, margin, demand, comp, status, note)| {
+            json!({"id": id, "business_unit_code": bu, "title": title, "source_url": url, "price": price, "est_cost": cost, "est_margin_pct": margin, "demand_score": demand, "competition_score": comp, "status": status, "decision_note": note})
+        })
+        .collect();
+    if let Some(want) = q.get("status") {
+        items.retain(|i| i["status"].as_str() == Some(want.as_str()));
+    }
+    ok(json!({"items": items, "total": items.len()}))
+}
+
+pub async fn create_product(State(state): State<AppState>, user: AuthUser, Json(body): Json<Value>) -> ApiResult {
+    let title = body.get("title").and_then(|v| v.as_str()).ok_or_else(|| AppError::bad_request("缺少 title"))?;
+    let id = new_id();
+    sqlx::query("INSERT INTO product_candidates (id, business_unit_code, title, source_url, price) VALUES ($1,$2,$3,$4,$5)")
+        .bind(&id)
+        .bind(body.get("business_unit_code").and_then(|v| v.as_str()))
+        .bind(title)
+        .bind(body.get("source_url").and_then(|v| v.as_str()))
+        .bind(body.get("price").and_then(|v| v.as_f64()).unwrap_or(0.0))
+        .execute(state.pool())
+        .await?;
+    audit(state.pool(), &user.0.sub, "create", "product_candidate", &id, json!({})).await;
+    ok(json!({"id": id, "status": "PENDING"}))
+}
+
+/// 状态流转：PENDING→ANALYZED→APPROVED→LISTED（上架=敏感动作，仅 ADMIN）
+pub async fn update_product(
+    State(state): State<AppState>,
+    user: AuthUser,
+    Path(id): Path<String>,
+    Json(body): Json<Value>,
+) -> ApiResult {
+    if let Some(target) = body.get("status").and_then(|v| v.as_str()) {
+        if !["PENDING", "ANALYZED", "APPROVED", "REJECTED", "LISTED"].contains(&target) {
+            return Err(AppError::bad_request("非法状态"));
+        }
+        if target == "LISTED" && user.0.role != "ADMIN" {
+            return Err(AppError::forbidden("商品上架是敏感动作，仅 ADMIN 可执行"));
+        }
+    }
+    let res = sqlx::query("UPDATE product_candidates SET status=COALESCE($2,status), decision_note=COALESCE($3,decision_note), price=COALESCE($4,price), updated_at=now() WHERE id=$1")
+        .bind(&id)
+        .bind(body.get("status").and_then(|v| v.as_str()))
+        .bind(body.get("decision_note").and_then(|v| v.as_str()))
+        .bind(body.get("price").and_then(|v| v.as_f64()))
+        .execute(state.pool())
+        .await?;
+    if res.rows_affected() == 0 {
+        return Err(AppError::not_found("选品不存在"));
+    }
+    audit(state.pool(), &user.0.sub, "update", "product_candidate", &id, json!({"fields": body.as_object().map(|o| o.keys().cloned().collect::<Vec<_>>()).unwrap_or_default()})).await;
+    ok(json!({"id": id, "updated": true}))
+}
+
+/// 内容详情（含正文）
+pub async fn get_content(State(state): State<AppState>, _user: AuthUser, Path(id): Path<String>) -> ApiResult {
+    let row: Option<(String, Option<String>, Option<String>, String, String, Option<String>, Option<Value>)> =
+        sqlx::query_as("SELECT title, content_type, body, language, status, business_unit_code, seo_metadata FROM content_assets WHERE id=$1")
+            .bind(&id)
+            .fetch_optional(state.pool())
+            .await?;
+    let (title, ctype, body_text, lang, status, bu, seo) = row.ok_or_else(|| AppError::not_found("内容不存在"))?;
+    ok(json!({"id": id, "title": title, "content_type": ctype, "body": body_text, "language": lang, "status": status, "business_unit_code": bu, "seo_metadata": seo}))
+}

@@ -200,3 +200,38 @@ async fn idempotent_topic_creation() {
     assert!(st2.is_success());
     assert_eq!(v1["data"]["id"], v2["data"]["id"], "幂等键第二次应返回同一记录");
 }
+
+#[tokio::test]
+async fn tool_invoke_permission_gate() {
+    let (app, _pool) = setup().await;
+    let token = login(&app).await;
+
+    // AUTO 级工具可直调
+    let (st, v) = send(app.clone(), req("POST", "/api/v1/tools/content.topics_template/invoke", Some(&token), Some(json!({"goal": "直调测试目标", "business_unit_code": "ECOM"})))).await;
+    assert!(st.is_success(), "{v}");
+    assert_eq!(v["data"]["topics"].as_array().unwrap().len(), 5);
+
+    // APPROVAL 级工具禁止直调（红线）
+    let (st, v) = send(app.clone(), req("POST", "/api/v1/tools/social.package_upload/invoke", Some(&token), Some(json!({"platform": "tiktok", "title": "x"})))).await;
+    assert_eq!(st, StatusCode::CONFLICT, "{v}");
+    assert!(v["error"]["message"].as_str().unwrap().contains("APPROVAL_REQUIRED"));
+}
+
+#[tokio::test]
+async fn product_selection_flow() {
+    let (app, pool) = setup().await;
+    let token = login(&app).await;
+
+    let (_, c) = send(app.clone(), req("POST", "/api/v1/products", Some(&token), Some(json!({"title": "测试选品：便携榨汁机", "business_unit_code": "ECOM", "price": 199.0, "source_url": "https://example.com/juicer"})))).await;
+    let pid = c["data"]["id"].as_str().unwrap().to_string();
+
+    // AI 未配置时评分工具返回 503 NOT_CONFIGURED（诚实状态，不造假）
+    let (st, v) = send(app.clone(), req("POST", "/api/v1/tools/ecommerce.score_product/invoke", Some(&token), Some(json!({"product_id": pid})))).await;
+    assert_eq!(st, StatusCode::SERVICE_UNAVAILABLE, "{v}");
+
+    // 上架权限门：ADMIN 可 LISTED
+    let (_, u) = send(app.clone(), req("PUT", &format!("/api/v1/products/{pid}"), Some(&token), Some(json!({"status": "LISTED"})))).await;
+    assert_eq!(u["data"]["updated"], true, "{u}");
+    let st: (String,) = sqlx::query_as("SELECT status FROM product_candidates WHERE id=$1").bind(&pid).fetch_one(&pool).await.unwrap();
+    assert_eq!(st.0, "LISTED");
+}

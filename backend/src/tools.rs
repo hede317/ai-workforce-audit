@@ -44,6 +44,7 @@ pub const TOOL_DEFS: &[ToolDef] = &[
     ToolDef { code: "memory.search", name: "记忆检索", category: "memory", description: "按关键词检索长期记忆", permission_level: "AUTO", input_schema: r#"{"q":"string","kind":"string?","limit":"int?"}"# },
     ToolDef { code: "crm.create_lead", name: "线索创建", category: "crm", description: "写入客户线索并记录事件", permission_level: "AUTO", input_schema: r#"{"name":"string?","email":"string?","phone":"string?","business_unit_code":"string?","source_channel":"string?","summary":"string?"}"# },
     ToolDef { code: "email.send_draft", name: "邮件发送", category: "email", description: "通过SMTP发送邮件（红线：必须审批）", permission_level: "APPROVAL", input_schema: r#"{"to":"string","subject":"string","body":"string"}"# },
+    ToolDef { code: "ecommerce.score_product", name: "选品AI评分", category: "ecommerce", description: "对选品候选做需求/竞争/毛利分析并回写评分（需AI）", permission_level: "AUTO", input_schema: r#"{"product_id":"string"}"# },
     ToolDef { code: "data.daily_report", name: "经营日报", category: "data", description: "汇总当日经营数据生成Markdown日报", permission_level: "AUTO", input_schema: r#"{}"# },
 ];
 
@@ -88,6 +89,7 @@ pub async fn dispatch(code: &str, args: Value, ctx: &ToolCtx<'_>) -> Result<Valu
         "memory.search" => memory_search(state, &args).await,
         "crm.create_lead" => crm_create_lead(state, &args).await,
         "email.send_draft" => email_send(state, &args).await,
+        "ecommerce.score_product" => score_product(state, &args).await,
         "data.daily_report" => daily_report(state).await,
         _ => Err(AppError::bad_request(format!("工具 {code} 未实现"))),
     }
@@ -466,4 +468,30 @@ async fn email_send(state: &AppState, args: &Value) -> Result<Value, AppError> {
         .build();
     mailer.send(email).await.map_err(|e| AppError::internal(format!("邮件发送失败: {e}")))?;
     Ok(json!({"output": format!("邮件已发送至 {to}"), "mode": "smtp"}))
+}
+
+async fn score_product(state: &AppState, args: &Value) -> Result<Value, AppError> {
+    let pid = take_str(args, "product_id").ok_or_else(|| AppError::bad_request("缺少 product_id"))?;
+    let row: Option<(String, Option<String>, f64, Option<String>)> =
+        sqlx::query_as("SELECT title, source_url, price, decision_note FROM product_candidates WHERE id=$1")
+            .bind(&pid).fetch_optional(state.pool()).await?;
+    let (title, source_url, price, note) = row.ok_or_else(|| AppError::not_found("选品不存在"))?;
+    let reply = call_ai(
+        state,
+        "你是跨境电商选品分析师。对商品做客观分析，只输出JSON。",
+        &format!("商品：{title}\n参考链接：{}\n售价：{price}\n既有备注：{}\n\n输出JSON：{{\"demand_score\":1-10需求分,\"competition_score\":1-10竞争分,\"est_cost\":估算成本,\"est_margin_pct\":估算毛利率百分比,\"decision_note\":\"三行以内结论\"}}",
+            source_url.as_deref().unwrap_or("无"), note.as_deref().unwrap_or("无")),
+        1200,
+    ).await?;
+    let parsed = crate::ai::extract_json(&reply.text).ok_or_else(|| AppError::internal("选品分析结果不是有效JSON"))?;
+    sqlx::query("UPDATE product_candidates SET demand_score=$2, competition_score=$3, est_cost=$4, est_margin_pct=$5, decision_note=$6, status=CASE WHEN status='PENDING' THEN 'ANALYZED' ELSE status END, updated_at=now() WHERE id=$1")
+        .bind(&pid)
+        .bind(parsed.get("demand_score").and_then(|v| v.as_i64()).unwrap_or(0) as i32)
+        .bind(parsed.get("competition_score").and_then(|v| v.as_i64()).unwrap_or(0) as i32)
+        .bind(parsed.get("est_cost").and_then(|v| v.as_f64()).unwrap_or(0.0))
+        .bind(parsed.get("est_margin_pct").and_then(|v| v.as_f64()).unwrap_or(0.0))
+        .bind(parsed.get("decision_note").and_then(|v| v.as_str()).unwrap_or(""))
+        .execute(state.pool())
+        .await?;
+    Ok(json!({"output": format!("选品评分已回写：{title}"), "analysis": parsed, "tokens": reply.tokens, "mode": "ai"}))
 }

@@ -3,17 +3,19 @@
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
-import { Bot, BrainCircuit, LayoutDashboard, ListChecks, LogOut, SendHorizonal, ShieldCheck, Sparkles } from "lucide-react";
+import { Bot, BrainCircuit, FileText, LayoutDashboard, ListChecks, LogOut, SendHorizonal, ShieldCheck, ShoppingBag, Sparkles } from "lucide-react";
 import { clearToken, get } from "@/lib/api";
 import { cn } from "@/lib/cn";
 
 const NAV = [
   { href: "/dashboard", label: "总览", icon: LayoutDashboard },
   { href: "/commander", label: "AI Commander", icon: Sparkles },
+  { href: "/content", label: "内容中心", icon: FileText },
+  { href: "/publishing", label: "发布中心", icon: SendHorizonal },
+  { href: "/products", label: "选品中心", icon: ShoppingBag },
   { href: "/tasks", label: "任务中心", icon: ListChecks },
   { href: "/agents", label: "Agent 团队", icon: Bot },
   { href: "/approvals", label: "审批中心", icon: ShieldCheck },
-  { href: "/publishing", label: "发布中心", icon: SendHorizonal },
   { href: "/memory", label: "记忆中心", icon: BrainCircuit },
 ];
 

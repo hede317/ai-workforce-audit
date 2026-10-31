@@ -214,3 +214,26 @@ pub async fn decide_approval(
     audit(state.pool(), &user.0.sub, "approval", "approval", &id, json!({"decision": decision, "note": note})).await;
     ok(result)
 }
+
+/// 工具直调（仅 AUTO 级；APPROVAL 级必须走 Commander 任务+审批中心，红线不开口子）
+pub async fn invoke_tool(
+    State(state): State<AppState>,
+    user: AuthUser,
+    Path(code): Path<String>,
+    Json(body): Json<Value>,
+) -> ApiResult {
+    let perm = crate::tools::TOOL_DEFS.iter().find(|t| t.code == code).map(|t| t.permission_level);
+    match perm {
+        None => return Err(crate::error::AppError::not_found("未注册的工具")),
+        Some("APPROVAL") => {
+            return Err(crate::error::AppError::conflict(
+                "APPROVAL_REQUIRED: 该工具须通过 AI Commander 下任务并经审批中心批准后执行",
+            ))
+        }
+        _ => {}
+    }
+    let ctx = crate::tools::ToolCtx { state: &state, task_id: "manual-invoke".into(), approved: false };
+    let value = crate::tools::dispatch(&code, body, &ctx).await?;
+    audit(state.pool(), &user.0.sub, "invoke_tool", "tool", &code, json!({})).await;
+    ok(value)
+}

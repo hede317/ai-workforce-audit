@@ -26,6 +26,7 @@ pub fn build_router(state: AppState) -> Router {
         .route("/api/v1/agents", get(agents::list_agents))
         .route("/api/v1/agents/:id", put(agents::update_agent))
         .route("/api/v1/tools", get(agents::list_tools))
+        .route("/api/v1/tools/:code/invoke", post(agents::invoke_tool))
         // AI Commander
         .route("/api/v1/commander/goals", post(agents::create_goal))
         .route("/api/v1/commander/goals/:id", get(agents::get_goal))
@@ -41,6 +42,7 @@ pub fn build_router(state: AppState) -> Router {
         // 内容
         .route("/api/v1/topics", get(business::list_topics).post(business::create_topic))
         .route("/api/v1/contents", get(business::list_contents).post(business::create_content))
+        .route("/api/v1/contents/:id", get(business::get_content))
         .route("/api/v1/contents/:id/approve", post(business::approve_content))
         .route("/api/v1/contents/:id/publish", post(business::publish_content))
         // 线索
@@ -49,6 +51,8 @@ pub fn build_router(state: AppState) -> Router {
         // 活动
         .route("/api/v1/campaigns", get(business::list_campaigns).post(business::create_campaign))
         // 发布中心
+        .route("/api/v1/products", get(business::list_products).post(business::create_product))
+        .route("/api/v1/products/:id", put(business::update_product))
         .route("/api/v1/publishing", get(business::list_publishing))
         .route("/api/v1/publishing/:id/result", post(business::record_publishing_result))
         // 记忆

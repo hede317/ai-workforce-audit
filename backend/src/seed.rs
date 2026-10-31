@@ -48,7 +48,7 @@ pub async fn run(pool: &PgPool, cfg: &Config) -> Result<(), anyhow::Error> {
         ("social.media", "社媒运营Agent", "社媒", "TikTok/YouTube/Facebook/Instagram/LinkedIn内容运营与发布管理；无授权平台一律走人工发布队列。", r#"["social.package_upload","web.fetch","memory.save"]"#, json!(["social.package_upload", "web.fetch", "memory.save"])),
         ("sales", "销售与客户开发Agent", "销售", "潜在客户研究、线索评分与分类、跟进建议、CRM更新；未经审批不得对外发送邮件或报价。", r#"["crm.create_lead","memory.search","memory.save"]"#, json!(["crm.create_lead", "memory.search", "memory.save"])),
         ("email", "邮件营销Agent", "邮件", "合法联系人的邮件内容生成、分组、发送计划与效果分析；发送动作必须审批。", r#"["memory.search"]"#, json!(["email.send_draft", "memory.search"])),
-        ("ecommerce", "电商运营Agent", "电商", "选品分析、竞品价格、商品描述与上架准备、订单与客诉分析；改价/退款必须审批。", r#"["memory.search","crm.create_lead"]"#, json!(["memory.search", "crm.create_lead"])),
+        ("ecommerce", "电商运营Agent", "电商", "选品分析、竞品价格、商品描述与上架准备、订单与客诉分析；改价/退款必须审批。", r#"["memory.search","crm.create_lead"]"#, json!(["ecommerce.score_product", "memory.search", "crm.create_lead"])),
         ("education", "培训与留学Agent", "教育", "课程研究、大纲与教学材料、留学项目资料整理、学员咨询分类与招生内容。", r#"["content.draft_article","memory.search"]"#, json!(["content.draft_article", "memory.search"])),
         ("enterprise", "企业服务Agent", "企业服务", "ERP与AI提效市场研究、企业流程诊断资料、方案初稿与项目机会管理。", r#"["content.draft_article","memory.search"]"#, json!(["content.draft_article", "memory.search"])),
         ("data.analyst", "数据分析Agent", "数据", "网站/社媒/SEO/线索转化数据分析，Agent效率与成本核算，每日经营报告。", r#"["data.daily_report","memory.search"]"#, json!(["data.daily_report", "memory.search"])),
