@@ -3,9 +3,11 @@
 import { useCallback, useEffect, useState } from "react";
 import { Check, Pencil, X } from "lucide-react";
 import { get, put } from "@/lib/api";
+import { useT } from "@/lib/i18n";
 import { Badge, Button, Card, CardHeader, ErrorText, Spinner, StatusDot } from "@/components/ui";
 
 export default function AgentsPage() {
+  const t = useT();
   const [agents, setAgents] = useState<any[]>([]);
   const [tools, setTools] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
@@ -53,8 +55,8 @@ export default function AgentsPage() {
 
   return (
     <div className="p-6">
-      <h1 className="text-xl font-bold">Agent 团队</h1>
-      <p className="mb-4 text-xs text-muted-foreground">1 名总经理 + 11 名专业虚拟员工，每个 Agent 有独立职责、系统提示词、工具权限与执行预算</p>
+      <h1 className="text-xl font-bold">{t("ag.title")}</h1>
+      <p className="mb-4 text-xs text-muted-foreground">{t("ag.sub")}</p>
       <ErrorText message={error} />
 
       <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
@@ -79,7 +81,7 @@ export default function AgentsPage() {
                     </Button>
                   </span>
                 ) : (
-                  <Button size="sm" variant="ghost" onClick={() => startEdit(a)} title="编辑系统提示词">
+                  <Button size="sm" variant="ghost" onClick={() => startEdit(a)} title={t("ag.editPrompt")}>
                     <Pencil size={12} />
                   </Button>
                 )
@@ -94,7 +96,7 @@ export default function AgentsPage() {
                   </Badge>
                 ))}
               </div>
-              <div className="mt-2 text-[10px] text-muted-foreground">预算：{a.max_tool_calls} 次工具 · {a.max_tokens} tokens · {a.max_seconds}s</div>
+              <div className="mt-2 text-[10px] text-muted-foreground">{t("ag.budget", { a: a.max_tool_calls, b: a.max_tokens, c: a.max_seconds })}</div>
               {editing === a.id ? (
                 <textarea
                   className="mt-2 min-h-[96px] w-full rounded-md border bg-background p-2 font-mono text-[11px] outline-none focus:ring-[3px] focus:ring-ring"
@@ -107,7 +109,7 @@ export default function AgentsPage() {
         ))}
       </div>
 
-      <h2 className="mb-2 mt-8 text-lg font-semibold">工具注册表</h2>
+      <h2 className="mb-2 mt-8 text-lg font-semibold">{t("ag.toolsTitle")}</h2>
       <Card>
         <table className="w-full text-xs">
           <thead>

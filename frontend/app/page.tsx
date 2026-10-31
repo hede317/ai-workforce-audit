@@ -4,10 +4,12 @@ import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { Bot } from "lucide-react";
 import { post, setToken } from "@/lib/api";
+import { useLocale } from "@/lib/i18n";
 import { Button, Card, ErrorText } from "@/components/ui";
 
 export default function LoginPage() {
   const router = useRouter();
+  const { t } = useLocale();
   const [username, setUsername] = useState("admin");
   const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
@@ -35,12 +37,12 @@ export default function LoginPage() {
           <div className="flex h-12 w-12 items-center justify-center rounded-xl bg-primary text-primary-foreground">
             <Bot size={24} />
           </div>
-          <h1 className="text-lg font-bold">HedeYou AI Workforce</h1>
-          <p className="text-xs text-muted-foreground">AI 企业虚拟员工与全域经营自动化平台</p>
+          <h1 className="text-lg font-bold">{t("login.title")}</h1>
+          <p className="text-xs text-muted-foreground">{t("login.sub")}</p>
         </div>
         <form onSubmit={submit} className="space-y-3">
           <div>
-            <label className="mb-1 block text-xs text-muted-foreground">用户名</label>
+            <label className="mb-1 block text-xs text-muted-foreground">{t("login.username")}</label>
             <input
               className="h-9 w-full rounded-md border bg-background px-3 text-sm outline-none focus:ring-[3px] focus:ring-ring"
               value={username}
@@ -49,7 +51,7 @@ export default function LoginPage() {
             />
           </div>
           <div>
-            <label className="mb-1 block text-xs text-muted-foreground">密码</label>
+            <label className="mb-1 block text-xs text-muted-foreground">{t("login.password")}</label>
             <input
               type="password"
               className="h-9 w-full rounded-md border bg-background px-3 text-sm outline-none focus:ring-[3px] focus:ring-ring"
@@ -60,7 +62,7 @@ export default function LoginPage() {
           </div>
           <ErrorText message={error} />
           <Button className="w-full" disabled={loading || !password}>
-            {loading ? "登录中…" : "进入指挥中心"}
+            {loading ? t("login.loading") : t("login.btn")}
           </Button>
         </form>
       </Card>

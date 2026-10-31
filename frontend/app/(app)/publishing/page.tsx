@@ -3,9 +3,11 @@
 import { useCallback, useEffect, useState } from "react";
 import { Package, SendHorizonal } from "lucide-react";
 import { get, post } from "@/lib/api";
+import { useT } from "@/lib/i18n";
 import { Badge, Button, Card, CardHeader, Empty, ErrorText, Spinner, StatusBadge } from "@/components/ui";
 
 export default function PublishingPage() {
+  const t = useT();
   const [tasks, setTasks] = useState<any[]>([]);
   const [contents, setContents] = useState<any[]>([]);
   const [platform, setPlatform] = useState("website");
@@ -55,13 +57,13 @@ export default function PublishingPage() {
   return (
     <div className="p-6">
       <h1 className="flex items-center gap-2 text-xl font-bold">
-        <SendHorizonal size={20} /> 发布中心
+        <SendHorizonal size={20} /> {t("pub.title")}
       </h1>
-      <p className="mb-4 text-xs text-muted-foreground">未授权平台一律人工上传；发布后回填链接与表现数据，形成内容→发布→线索追溯闭环</p>
+      <p className="mb-4 text-xs text-muted-foreground">{t("pub.sub")}</p>
       <ErrorText message={error} />
 
       <Card className="mb-4">
-        <CardHeader title={<span className="flex items-center gap-1.5"><Package size={14} /> 已审批待发布内容</span>} desc="内容必须先在内容管理中 APPROVED" action={
+        <CardHeader title={<span className="flex items-center gap-1.5"><Package size={14} /> {t("pub.approvedList")}</span>} desc={t("pub.approvedDesc")} action={
           <select className="h-8 rounded-md border bg-background px-2 text-xs" value={platform} onChange={(e) => setPlatform(e.target.value)}>
             {["website", "douyin", "bilibili", "kuaishou", "xiaohongshu", "youtube", "tiktok", "facebook", "instagram", "linkedin"].map((p) => (
               <option key={p} value={p}>
@@ -71,7 +73,7 @@ export default function PublishingPage() {
           </select>
         } />
         {contents.length === 0 ? (
-          <Empty text="没有已审批内容" />
+          <Empty text={t("pub.noApproved")} />
         ) : (
           <div className="divide-y">
             {contents.map((c) => (
@@ -81,7 +83,7 @@ export default function PublishingPage() {
                   <div className="text-xs text-muted-foreground">{c.business_unit_code || "-"} · {c.content_type}</div>
                 </div>
                 <Button size="sm" variant="secondary" onClick={() => makePackage(c.id)}>
-                  生成发布包
+                  {t("pub.makePkg")}
                 </Button>
               </div>
             ))}
@@ -90,11 +92,11 @@ export default function PublishingPage() {
       </Card>
 
       <Card>
-        <CardHeader title="发布任务" desc="HUMAN_QUEUE = 人工上传后回填；PUBLISHED = 已回填发布结果" />
+        <CardHeader title={t("pub.tasks")} desc={t("pub.tasksDesc")} />
         {loading ? (
           <Spinner />
         ) : tasks.length === 0 ? (
-          <Empty text="暂无发布任务" />
+          <Empty text={t("pub.empty")} />
         ) : (
           <div className="divide-y">
             {tasks.map((t) => (
@@ -124,7 +126,7 @@ export default function PublishingPage() {
                   <div className="flex shrink-0 items-center gap-1.5">
                     {t.status === "HUMAN_QUEUE" ? (
                       <Button size="sm" variant="secondary" onClick={() => setFilling(filling === t.id ? null : t.id)}>
-                        回填结果
+                        {t("pub.fill")}
                       </Button>
                     ) : null}
                     <StatusBadge status={t.status} />
@@ -134,18 +136,18 @@ export default function PublishingPage() {
                   <div className="mt-2 flex flex-wrap gap-2">
                     <input
                       className="h-8 min-w-[240px] flex-1 rounded-md border bg-background px-3 text-xs outline-none focus:ring-[3px] focus:ring-ring"
-                      placeholder="发布链接（https://…）"
+                      placeholder={t("pub.urlPh")}
                       value={fill.published_url}
                       onChange={(e) => setFill({ ...fill, published_url: e.target.value })}
                     />
                     <input
                       className="h-8 w-44 rounded-md border bg-background px-3 text-xs outline-none focus:ring-[3px] focus:ring-ring"
-                      placeholder="平台贴子ID（可选）"
+                      placeholder={t("pub.postIdPh")}
                       value={fill.platform_post_id}
                       onChange={(e) => setFill({ ...fill, platform_post_id: e.target.value })}
                     />
                     <Button size="sm" variant="success" onClick={() => submitResult(t.id)}>
-                      确认已发布
+                      {t("pub.confirmPub")}
                     </Button>
                   </div>
                 ) : null}

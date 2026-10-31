@@ -3,9 +3,11 @@
 import { useCallback, useEffect, useState } from "react";
 import { Check, ShieldCheck, X } from "lucide-react";
 import { get, post } from "@/lib/api";
+import { useT } from "@/lib/i18n";
 import { Badge, Button, Card, Empty, ErrorText, Spinner, StatusBadge } from "@/components/ui";
 
 export default function ApprovalsPage() {
+  const t = useT();
   const [items, setItems] = useState<any[]>([]);
   const [status, setStatus] = useState("PENDING");
   const [loading, setLoading] = useState(true);
@@ -42,9 +44,9 @@ export default function ApprovalsPage() {
       <div className="mb-4 flex items-center justify-between">
         <div>
           <h1 className="flex items-center gap-2 text-xl font-bold">
-            <ShieldCheck size={20} /> 审批中心
+            <ShieldCheck size={20} /> {t("ap.title")}
           </h1>
-          <p className="text-xs text-muted-foreground">红线：对外发布、发邮件、联系客户、改价、广告，必须经人工批准</p>
+          <p className="text-xs text-muted-foreground">{t("ap.sub")}</p>
         </div>
         <select className="h-8 rounded-md border bg-background px-2 text-xs" value={status} onChange={(e) => setStatus(e.target.value)}>
           {["PENDING", "APPROVED", "REJECTED"].map((s) => (
@@ -60,7 +62,7 @@ export default function ApprovalsPage() {
         {loading ? (
           <Spinner />
         ) : items.length === 0 ? (
-          <Empty text={status === "PENDING" ? "没有待审批事项 ✅" : "暂无记录"} />
+          <Empty text={status === "PENDING" ? t("ap.allClear") : t("ap.empty")} />
         ) : (
           <div className="divide-y">
             {items.map((a) => (
@@ -68,8 +70,8 @@ export default function ApprovalsPage() {
                 <div className="min-w-0">
                   <div className="truncate text-sm">{a.action}</div>
                   <div className="text-xs text-muted-foreground">
-                    任务 <span className="font-mono">{a.task_id.slice(0, 12)}</span> · 请求方 {a.requested_by || "-"}
-                    {a.decided_by ? ` · 决定方 ${a.decided_by}` : ""}
+                    {t("ap.task")} <span className="font-mono">{a.task_id.slice(0, 12)}</span> · {t("ap.by")} {a.requested_by || "-"}
+                    {a.decided_by ? ` · ${t("ap.decidedBy")} ${a.decided_by}` : ""}
                   </div>
                 </div>
                 <div className="flex shrink-0 items-center gap-1.5">
@@ -77,10 +79,10 @@ export default function ApprovalsPage() {
                   {a.status === "PENDING" ? (
                     <>
                       <Button size="sm" variant="success" onClick={() => decide(a.id, "APPROVED")}>
-                        <Check size={12} /> 批准
+                        <Check size={12} /> {t("c.approve")}
                       </Button>
                       <Button size="sm" variant="destructive" onClick={() => decide(a.id, "REJECTED")}>
-                        <X size={12} /> 拒绝
+                        <X size={12} /> {t("c.reject")}
                       </Button>
                     </>
                   ) : (

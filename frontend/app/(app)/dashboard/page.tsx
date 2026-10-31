@@ -3,9 +3,11 @@
 import { useCallback, useEffect, useState } from "react";
 import { Bot, Coins, ListChecks, ShieldAlert, UserRoundPlus, Wrench } from "lucide-react";
 import { get } from "@/lib/api";
+import { useT } from "@/lib/i18n";
 import { Card, CardHeader, ErrorText, MetricCard, Spinner, StatusBadge } from "@/components/ui";
 
 export default function DashboardPage() {
+  const t = useT();
   const [summary, setSummary] = useState<any>(null);
   const [report, setReport] = useState<string>("");
   const [approvals, setApprovals] = useState<any[]>([]);
@@ -38,33 +40,33 @@ export default function DashboardPage() {
     <div className="p-6">
       <div className="mb-4 flex items-center justify-between">
         <div>
-          <h1 className="text-xl font-bold">经营总览</h1>
-          <p className="text-xs text-muted-foreground">虚拟员工团队今日工作情况</p>
+          <h1 className="text-xl font-bold">{t("dash.title")}</h1>
+          <p className="text-xs text-muted-foreground">{t("dash.sub")}</p>
         </div>
-        <button onClick={load} className="text-xs text-muted-foreground hover:text-foreground">刷新</button>
+        <button onClick={load} className="text-xs text-muted-foreground hover:text-foreground">{t("c.refresh")}</button>
       </div>
 
       <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
-        <MetricCard icon={<Bot size={16} />} value={summary.agents} label="在职 Agent" description={`工具 ${summary.tools} 个已注册`} />
-        <MetricCard icon={<ListChecks size={16} />} value={summary.tasks.completed} label="完成任务" description={`失败 ${summary.tasks.failed} · 进行中 ${summary.tasks.active}`} />
-        <MetricCard icon={<UserRoundPlus size={16} />} value={summary.leads.total} label="客户线索" description={`新线索 ${summary.leads.new} · 成交 ${summary.leads.won}`} />
-        <MetricCard icon={<Coins size={16} />} value={summary.tokens_used} label="Token 消耗" description="全部任务累计" />
+        <MetricCard icon={<Bot size={16} />} value={summary.agents} label={t("dash.mAgents")} description={t("dash.mToolsReg", { n: summary.tools })} />
+        <MetricCard icon={<ListChecks size={16} />} value={summary.tasks.completed} label={t("dash.mTasksDone")} description={t("dash.mTasksSub", { a: summary.tasks.failed, b: summary.tasks.active })} />
+        <MetricCard icon={<UserRoundPlus size={16} />} value={summary.leads.total} label={t("dash.mLeads")} description={t("dash.mLeadsSub", { a: summary.leads.new, b: summary.leads.won })} />
+        <MetricCard icon={<Coins size={16} />} value={summary.tokens_used} label={t("dash.mTokens")} description={t("dash.mTokensSub")} />
       </div>
 
       <div className="mt-4 grid gap-4 lg:grid-cols-3">
         <Card className="lg:col-span-2">
-          <CardHeader title="今日经营日报" desc="Data Analyst Agent 自动生成" />
-          <pre className="whitespace-pre-wrap px-4 py-3 font-mono text-xs leading-relaxed text-muted-foreground">{report || "暂无"}</pre>
+          <CardHeader title={t("dash.today")} desc={t("dash.todayDesc")} />
+          <pre className="whitespace-pre-wrap px-4 py-3 font-mono text-xs leading-relaxed text-muted-foreground">{report || t("c.none")}</pre>
         </Card>
         <Card>
-          <CardHeader title={<span className="flex items-center gap-1.5"><ShieldAlert size={14} /> 待审批</span>} desc={`${summary.approvals_pending} 项等待你的决定`} />
+          <CardHeader title={<span className="flex items-center gap-1.5"><ShieldAlert size={14} /> {t("dash.pending")}</span>} desc={t("dash.pendingDesc", { n: summary.approvals_pending })} />
           <div className="divide-y">
-            {approvals.length === 0 ? <div className="px-4 py-6 text-center text-xs text-muted-foreground">没有待办 ✅</div> : null}
+            {approvals.length === 0 ? <div className="px-4 py-6 text-center text-xs text-muted-foreground">{t("dash.allClear")}</div> : null}
             {approvals.slice(0, 6).map((a) => (
               <div key={a.id} className="flex items-center justify-between gap-2 px-4 py-2.5">
                 <div className="min-w-0">
                   <div className="truncate text-xs">{a.action}</div>
-                  <div className="text-[10px] text-muted-foreground">by {a.requested_by}</div>
+                  <div className="text-[10px] text-muted-foreground">{t("dash.by")} {a.requested_by}</div>
                 </div>
                 <StatusBadge status="PENDING" />
               </div>
@@ -74,9 +76,9 @@ export default function DashboardPage() {
       </div>
 
       <div className="mt-4 grid gap-4 md:grid-cols-3">
-        <MetricCard icon={<ListChecks size={16} />} value={summary.content.topics} label="内容选题" description={`内容资产 ${summary.content.assets} · 已批 ${summary.content.approved}`} />
-        <MetricCard icon={<Wrench size={16} />} value={summary.publishing.human_queue} label="人工发布队列" description={`已发布 ${summary.publishing.published}`} />
-        <MetricCard icon={<ShieldAlert size={16} />} value={summary.memories.pending_review} label="记忆待确认" description={`生效记忆 ${summary.memories.total}`} />
+        <MetricCard icon={<ListChecks size={16} />} value={summary.content.topics} label={t("dash.mTopics")} description={t("dash.mTopicsSub", { a: summary.content.assets, b: summary.content.approved })} />
+        <MetricCard icon={<Wrench size={16} />} value={summary.publishing.human_queue} label={t("dash.mQueue")} description={t("dash.mQueueSub", { n: summary.publishing.published })} />
+        <MetricCard icon={<ShieldAlert size={16} />} value={summary.memories.pending_review} label={t("dash.mMemReview")} description={t("dash.mMemSub", { n: summary.memories.total })} />
       </div>
     </div>
   );

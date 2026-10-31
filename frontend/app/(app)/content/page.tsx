@@ -3,9 +3,11 @@
 import { useCallback, useEffect, useState } from "react";
 import { FileText, Plus, Sparkles } from "lucide-react";
 import { get, post } from "@/lib/api";
+import { useT } from "@/lib/i18n";
 import { Badge, Button, Card, CardHeader, Empty, ErrorText, Spinner, StatusBadge } from "@/components/ui";
 
 export default function ContentPage() {
+  const t = useT();
   const [topics, setTopics] = useState<any[]>([]);
   const [contents, setContents] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
@@ -78,7 +80,7 @@ export default function ContentPage() {
     try {
       const d = await get<any>(`/api/v1/contents/${id}`);
       setOpenId(id);
-      setBody(d.body || "(正文为空)");
+      setBody(d.body || t("ct.bodyEmpty"));
     } catch (e: any) {
       setError(e.message);
     }
@@ -87,25 +89,25 @@ export default function ContentPage() {
   return (
     <div className="p-6">
       <h1 className="flex items-center gap-2 text-xl font-bold">
-        <FileText size={20} /> 内容中心
+        <FileText size={20} /> {t("ct.title")}
       </h1>
-      <p className="mb-4 text-xs text-muted-foreground">选题 → AI 起草 → 人工审批 → 生成发布包（发布在发布中心回填）</p>
+      <p className="mb-4 text-xs text-muted-foreground">{t("ct.sub")}</p>
       <ErrorText message={error} />
 
       <Card className="mb-4">
         <CardHeader
-          title="选题池"
-          desc={`${topics.length} 个选题；[起草] 调用 AI 文章工具（未配置 AI 会如实报错）`}
+          title={t("ct.topicPool")}
+          desc={t("ct.topicDesc", { n: topics.length })}
           action={
             <Button size="sm" onClick={() => setAdding(!adding)} variant={adding ? "secondary" : "default"}>
-              <Plus size={13} /> 新建选题
+              <Plus size={13} /> {t("ct.newTopic")}
             </Button>
           }
         />
         {adding ? (
           <div className="border-b bg-[oklch(0.13_0_0)] px-4 py-3">
             <div className="flex flex-wrap gap-2">
-              <input className="h-8 min-w-[260px] flex-1 rounded-md border bg-background px-3 text-xs" placeholder="选题标题" value={form.title} onChange={(e) => setForm({ ...form, title: e.target.value })} />
+              <input className="h-8 min-w-[260px] flex-1 rounded-md border bg-background px-3 text-xs" placeholder={t("ct.phTitle")} value={form.title} onChange={(e) => setForm({ ...form, title: e.target.value })} />
               <select className="h-8 rounded-md border bg-background px-2 text-xs" value={form.business_unit_code} onChange={(e) => setForm({ ...form, business_unit_code: e.target.value })}>
                 {bus.map((b) => (
                   <option key={b.code} value={b.code}>
@@ -113,7 +115,7 @@ export default function ContentPage() {
                   </option>
                 ))}
               </select>
-              <input className="h-8 w-40 rounded-md border bg-background px-3 text-xs" placeholder="目标受众（可选）" value={form.audience} onChange={(e) => setForm({ ...form, audience: e.target.value })} />
+              <input className="h-8 w-40 rounded-md border bg-background px-3 text-xs" placeholder={t("ct.phAudience")} value={form.audience} onChange={(e) => setForm({ ...form, audience: e.target.value })} />
               <Button size="sm" variant="success" onClick={addTopic}>
                 保存
               </Button>
@@ -123,7 +125,7 @@ export default function ContentPage() {
         {loading ? (
           <Spinner />
         ) : topics.length === 0 ? (
-          <Empty text="没有选题——去 AI Commander 下个目标，或手动新建" />
+          <Empty text={t("ct.emptyTopics")} />
         ) : (
           <div className="divide-y">
             {topics.slice(0, 12).map((t) => (
@@ -137,7 +139,7 @@ export default function ContentPage() {
                 <div className="flex shrink-0 items-center gap-1.5">
                   <Badge tone="blue">{t.status}</Badge>
                   <Button size="sm" variant="secondary" disabled={busy} onClick={() => draftArticle(t)}>
-                    <Sparkles size={12} /> 起草
+                    <Sparkles size={12} /> {t("ct.draft")}
                   </Button>
                 </div>
               </div>
@@ -147,9 +149,9 @@ export default function ContentPage() {
       </Card>
 
       <Card>
-        <CardHeader title="内容资产" desc="DRAFT → APPROVED →（发布中心生成发布包）→ PUBLISHED" />
+        <CardHeader title={t("ct.assets")} desc="DRAFT → APPROVED →（发布中心生成发布包）→ PUBLISHED" />
         {contents.length === 0 ? (
-          <Empty text="暂无内容" />
+          <Empty text={t("ct.emptyContents")} />
         ) : (
           <div className="divide-y">
             {contents.map((c) => (
@@ -164,7 +166,7 @@ export default function ContentPage() {
                   <div className="flex shrink-0 items-center gap-1.5">
                     {c.status === "DRAFT" ? (
                       <Button size="sm" variant="success" onClick={() => approve(c.id)}>
-                        审批通过
+                        {t("ct.approveBtn")}
                       </Button>
                     ) : null}
                     <StatusBadge status={c.status} />

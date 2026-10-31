@@ -3,9 +3,11 @@
 import { useCallback, useEffect, useState } from "react";
 import { RotateCcw, Square } from "lucide-react";
 import { get, post } from "@/lib/api";
+import { useT } from "@/lib/i18n";
 import { Button, Card, Empty, ErrorText, Spinner, StatusBadge } from "@/components/ui";
 
 export default function TasksPage() {
+  const tr = useT();
   const [tasks, setTasks] = useState<any[]>([]);
   const [status, setStatus] = useState("");
   const [error, setError] = useState<string | null>(null);
@@ -53,11 +55,11 @@ export default function TasksPage() {
     <div className="p-6">
       <div className="mb-4 flex items-center justify-between">
         <div>
-          <h1 className="text-xl font-bold">任务中心</h1>
-          <p className="text-xs text-muted-foreground">所有虚拟员工的工作记录，失败可重试</p>
+          <h1 className="text-xl font-bold">{tr("tasks.title")}</h1>
+          <p className="text-xs text-muted-foreground">{tr("tasks.sub")}</p>
         </div>
         <select className="h-8 rounded-md border bg-background px-2 text-xs" value={status} onChange={(e) => setStatus(e.target.value)}>
-          <option value="">全部状态</option>
+          <option value="">{tr("tasks.allStatus")}</option>
           {["Created", "Running", "Waiting Approval", "Completed", "Failed", "Cancelled", "Rejected"].map((s) => (
             <option key={s} value={s}>
               {s}
@@ -71,7 +73,7 @@ export default function TasksPage() {
         {loading ? (
           <Spinner />
         ) : tasks.length === 0 ? (
-          <Empty text="还没有任务，去 AI Commander 下达第一个目标吧" />
+          <Empty text={tr("tasks.empty")} />
         ) : (
           <div className="divide-y">
             {tasks.map((t) => (
@@ -80,23 +82,23 @@ export default function TasksPage() {
                   <button className="min-w-0 flex-1 text-left" onClick={() => showDetail(t.id)}>
                     <div className="flex items-center gap-2">
                       <span className="truncate text-sm">{t.title}</span>
-                      {t.depth === 0 ? <span className="rounded bg-muted px-1 py-0.5 text-[10px] text-muted-foreground">目标</span> : null}
+                      {t.depth === 0 ? <span className="rounded bg-muted px-1 py-0.5 text-[10px] text-muted-foreground">{tr("tasks.goalTag")}</span> : null}
                     </div>
                     <div className="text-xs text-muted-foreground">
                       {t.agent_code || "-"}
                       {t.tool_hint ? ` · ${t.tool_hint}` : ""}
-                      {` · tokens ${t.tokens_used}`}
+                      {` · ${tr("tasks.tokens", { n: t.tokens_used })}`}
                     </div>
                   </button>
                   <div className="flex shrink-0 items-center gap-1.5">
                     {t.status === "Failed" ? (
                       <Button size="sm" variant="secondary" onClick={() => retry(t.id)}>
-                        <RotateCcw size={12} /> 重试
+                        <RotateCcw size={12} /> {tr("c.refresh")}
                       </Button>
                     ) : null}
                     {["Created", "Waiting Approval", "Assigned", "Planning"].includes(t.status) ? (
                       <Button size="sm" variant="ghost" onClick={() => cancel(t.id)}>
-                        <Square size={12} /> 取消
+                        <Square size={12} /> {tr("c.cancel")}
                       </Button>
                     ) : null}
                     <StatusBadge status={t.status} />

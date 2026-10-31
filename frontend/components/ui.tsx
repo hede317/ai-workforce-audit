@@ -1,6 +1,7 @@
 "use client";
 
 import { cn } from "@/lib/cn";
+import { useT } from "@/lib/i18n";
 
 export function Card({ className, children }: { className?: string; children: React.ReactNode }) {
   return <div className={cn("rounded-lg border bg-card text-card-foreground shadow-sm", className)}>{children}</div>;
@@ -61,29 +62,16 @@ export function Badge({ children, tone = "neutral", className }: { children: Rea
   return <span className={cn("inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium", tones[tone], className)}>{children}</span>;
 }
 
-const STATUS_TONE: Record<string, { tone: Parameters<typeof Badge>[0]["tone"]; label: string }> = {
-  Completed: { tone: "green", label: "已完成" },
-  Running: { tone: "cyan", label: "运行中" },
-  "Waiting Approval": { tone: "yellow", label: "待审批" },
-  Failed: { tone: "red", label: "失败" },
-  Cancelled: { tone: "neutral", label: "已取消" },
-  Rejected: { tone: "red", label: "已拒绝" },
-  Created: { tone: "blue", label: "待执行" },
-  Planning: { tone: "indigo", label: "规划中" },
-  Assigned: { tone: "indigo", label: "已分配" },
-  Paused: { tone: "yellow", label: "已暂停" },
-  APPROVED: { tone: "green", label: "已批准" },
-  DRAFT: { tone: "neutral", label: "草稿" },
-  NEW: { tone: "blue", label: "新建" },
-  HUMAN_QUEUE: { tone: "violet", label: "人工发布队列" },
-  PUBLISHED: { tone: "green", label: "已发布" },
-  ACTIVE: { tone: "green", label: "生效" },
-  PENDING: { tone: "yellow", label: "待确认" },
+const STATUS_TONE: Record<string, Parameters<typeof Badge>[0]["tone"]> = {
+  Completed: "green", Running: "cyan", "Waiting Approval": "yellow", Failed: "red", Cancelled: "neutral",
+  Rejected: "red", Created: "blue", Planning: "indigo", Assigned: "indigo", Paused: "yellow",
+  APPROVED: "green", DRAFT: "neutral", NEW: "blue", HUMAN_QUEUE: "violet", PUBLISHED: "green",
+  ACTIVE: "green", PENDING: "yellow",
 };
 
 export function StatusBadge({ status }: { status: string }) {
-  const s = STATUS_TONE[status] || { tone: "neutral" as const, label: status };
-  return <Badge tone={s.tone}>{s.label}</Badge>;
+  const t = useT();
+  return <Badge tone={STATUS_TONE[status] || "neutral"}>{t(status)}</Badge>;
 }
 
 export function StatusDot({ status }: { status: string }) {
@@ -110,8 +98,9 @@ export function MetricCard({ icon, value, label, description }: { icon?: React.R
   );
 }
 
-export function Empty({ text = "暂无数据" }: { text?: string }) {
-  return <div className="px-4 py-10 text-center text-sm text-muted-foreground">{text}</div>;
+export function Empty({ text }: { text?: string }) {
+  const t = useT();
+  return <div className="px-4 py-10 text-center text-sm text-muted-foreground">{text ?? t("c.none")}</div>;
 }
 
 export function ErrorText({ message }: { message?: string | null }) {
@@ -119,11 +108,12 @@ export function ErrorText({ message }: { message?: string | null }) {
   return <div className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-xs text-[oklch(0.75_0.15_25)]">{message}</div>;
 }
 
-export function Spinner({ text = "加载中…" }: { text?: string }) {
+export function Spinner({ text }: { text?: string }) {
+  const t = useT();
   return (
     <div className="flex items-center gap-2 px-4 py-8 text-sm text-muted-foreground">
       <span className="h-3 w-3 animate-spin rounded-full border-2 border-muted-foreground border-t-transparent" />
-      {text}
+      {text ?? t("c.loading")}
     </div>
   );
 }

@@ -3,6 +3,7 @@
 import { useState } from "react";
 import { Play, Send, Square } from "lucide-react";
 import { get, post } from "@/lib/api";
+import { useT } from "@/lib/i18n";
 import { Badge, Button, Card, CardHeader, Empty, ErrorText, Spinner, StatusBadge } from "@/components/ui";
 
 interface ChildTask {
@@ -16,6 +17,7 @@ interface ChildTask {
 }
 
 export default function CommanderPage() {
+  const t = useT();
   const [goal, setGoal] = useState("");
   const [bu, setBu] = useState("");
   const [bus, setBus] = useState<any[]>([]);
@@ -73,12 +75,12 @@ export default function CommanderPage() {
   return (
     <div className="p-6">
       <h1 className="text-xl font-bold">AI Commander</h1>
-      <p className="mb-4 text-xs text-muted-foreground">下达经营目标，CEO Agent 拆解任务并分派专业虚拟员工执行</p>
+      <p className="mb-4 text-xs text-muted-foreground">{t("cmd.sub")}</p>
 
       <Card className="p-4">
         <textarea
           className="min-h-[72px] w-full resize-y rounded-md border bg-background p-3 text-sm outline-none focus:ring-[3px] focus:ring-ring"
-          placeholder="例：帮我推广企业数字化培训业务，一个月内获取 10 条企业客户咨询线索"
+          placeholder={t("cmd.ph")}
           value={goal}
           onChange={(e) => setGoal(e.target.value)}
         />
@@ -95,31 +97,31 @@ export default function CommanderPage() {
             ))}
           </select>
           <Button onClick={submitGoal} disabled={busy || !goal.trim()}>
-            <Send size={14} /> 下达目标
+            <Send size={14} /> {t("cmd.send")}
           </Button>
           {plan ? (
             <Button variant="secondary" onClick={execute} disabled={busy}>
-              <Play size={14} /> 执行任务
+              <Play size={14} /> {t("cmd.exec")}
             </Button>
           ) : null}
           {tree ? (
             <Button variant="ghost" onClick={refresh} disabled={busy}>
-              刷新状态
+              {t("cmd.refreshStatus")}
             </Button>
           ) : null}
         </div>
         <ErrorText message={error} />
       </Card>
 
-      {busy ? <Spinner text="CEO Agent 工作中…" /> : null}
+      {busy ? <Spinner text={t("cmd.working")} /> : null}
 
       {plan ? (
         <Card className="mt-4">
           <CardHeader
-            title="任务计划"
+            title={t("cmd.plan")}
             desc={
               <span className="flex items-center gap-2">
-                <Badge tone={plan.mode === "ai" ? "indigo" : "neutral"}>{plan.mode === "ai" ? "CEO AI 拆解" : "离线模板拆解（AI未配置）"}</Badge>
+                <Badge tone={plan.mode === "ai" ? "indigo" : "neutral"}>{plan.mode === "ai" ? t("cmd.modeAi") : t("cmd.modeOffline")}</Badge>
                 root: <span className="font-mono text-[10px]">{plan.root_id.slice(0, 12)}</span>
               </span>
             }
@@ -131,10 +133,10 @@ export default function CommanderPage() {
                   <div className="truncate text-sm">{c.title}</div>
                   <div className="text-xs text-muted-foreground">
                     {c.agent_code}
-                    {c.tool_hint ? ` · 工具 ${c.tool_hint}` : " · AI 自主完成"}
+                    {c.tool_hint ? ` · ${t("cmd.tool")} ${c.tool_hint}` : ` · ${t("cmd.aiFree")}`}
                   </div>
                 </div>
-                {c.requires_approval ? <Badge tone="yellow">需审批</Badge> : <Badge tone="neutral">自动</Badge>}
+                {c.requires_approval ? <Badge tone="yellow">{t("cmd.needApproval")}</Badge> : <Badge tone="neutral">{t("cmd.auto")}</Badge>}
               </div>
             ))}
           </div>
@@ -143,7 +145,7 @@ export default function CommanderPage() {
 
       {tree ? (
         <Card className="mt-4">
-          <CardHeader title="执行结果" desc={<StatusBadge status={tree.root.status} />} />
+          <CardHeader title={t("cmd.result")} desc={<StatusBadge status={tree.root.status} />} />
           {tree.children.length === 0 ? <Empty /> : null}
           <div className="divide-y">
             {tree.children.map((c) => (
@@ -158,7 +160,7 @@ export default function CommanderPage() {
                 {c.error ? <div className="mt-1.5 rounded-md bg-destructive/10 px-2 py-1 font-mono text-[10px] text-[oklch(0.75_0.15_25)]">{c.error}</div> : null}
                 {c.result?.output ? (
                   <details className="mt-1.5">
-                    <summary className="cursor-pointer text-xs text-muted-foreground hover:text-foreground">查看产出</summary>
+                    <summary className="cursor-pointer text-xs text-muted-foreground hover:text-foreground">{t("cmd.viewOutput")}</summary>
                     <pre className="mt-1 max-h-48 overflow-auto whitespace-pre-wrap rounded-md bg-[oklch(0.13_0_0)] p-3 font-mono text-[11px] leading-relaxed">{String(c.result.output)}</pre>
                   </details>
                 ) : null}

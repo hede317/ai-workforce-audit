@@ -3,25 +3,27 @@
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
-import { Bot, BrainCircuit, FileText, LayoutDashboard, ListChecks, LogOut, SendHorizonal, ShieldCheck, ShoppingBag, Sparkles } from "lucide-react";
+import { Bot, BrainCircuit, FileText, Globe, LayoutDashboard, ListChecks, LogOut, SendHorizonal, ShieldCheck, ShoppingBag, Sparkles } from "lucide-react";
 import { clearToken, get } from "@/lib/api";
+import { LOCALES, useLocale } from "@/lib/i18n";
 import { cn } from "@/lib/cn";
 
 const NAV = [
-  { href: "/dashboard", label: "总览", icon: LayoutDashboard },
-  { href: "/commander", label: "AI Commander", icon: Sparkles },
-  { href: "/content", label: "内容中心", icon: FileText },
-  { href: "/publishing", label: "发布中心", icon: SendHorizonal },
-  { href: "/products", label: "选品中心", icon: ShoppingBag },
-  { href: "/tasks", label: "任务中心", icon: ListChecks },
-  { href: "/agents", label: "Agent 团队", icon: Bot },
-  { href: "/approvals", label: "审批中心", icon: ShieldCheck },
-  { href: "/memory", label: "记忆中心", icon: BrainCircuit },
+  { href: "/dashboard", label: "nav.dashboard", icon: LayoutDashboard },
+  { href: "/commander", label: "nav.commander", icon: Sparkles },
+  { href: "/content", label: "nav.content", icon: FileText },
+  { href: "/publishing", label: "nav.publishing", icon: SendHorizonal },
+  { href: "/products", label: "nav.products", icon: ShoppingBag },
+  { href: "/tasks", label: "nav.tasks", icon: ListChecks },
+  { href: "/agents", label: "nav.agents", icon: Bot },
+  { href: "/approvals", label: "nav.approvals", icon: ShieldCheck },
+  { href: "/memory", label: "nav.memory", icon: BrainCircuit },
 ];
 
 export default function Shell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
   const router = useRouter();
+  const { locale, setLocale, t } = useLocale();
   const [username, setUsername] = useState("");
   const [pending, setPending] = useState(0);
 
@@ -50,7 +52,7 @@ export default function Shell({ children }: { children: React.ReactNode }) {
           </div>
           <div>
             <div className="text-sm font-semibold leading-tight">AI Workforce</div>
-            <div className="text-[10px] text-muted-foreground">HedeYou 虚拟员工平台</div>
+            <div className="text-[10px] text-muted-foreground">{t("shell.brandSub")}</div>
           </div>
         </div>
         <nav className="flex-1 space-y-0.5 px-2">
@@ -66,7 +68,7 @@ export default function Shell({ children }: { children: React.ReactNode }) {
                 )}
               >
                 <Icon size={16} />
-                <span className="flex-1">{label}</span>
+                <span className="flex-1">{t(label)}</span>
                 {href === "/approvals" && pending > 0 ? (
                   <span className="rounded-full bg-yellow-400/15 px-1.5 py-0.5 text-[10px] font-medium text-[oklch(0.85_0.13_85)]">{pending}</span>
                 ) : null}
@@ -74,7 +76,22 @@ export default function Shell({ children }: { children: React.ReactNode }) {
             );
           })}
         </nav>
-        <div className="border-t px-4 py-3">
+        <div className="space-y-2 border-t px-4 py-3">
+          <div className="flex items-center gap-1.5">
+            <Globe size={13} className="text-muted-foreground" />
+            <select
+              className="h-7 w-full rounded-md border bg-background px-1.5 text-xs outline-none"
+              value={locale}
+              onChange={(e) => setLocale(e.target.value as any)}
+              title="Language / 语言 / اللغة"
+            >
+              {LOCALES.map((l) => (
+                <option key={l.code} value={l.code}>
+                  {l.label}
+                </option>
+              ))}
+            </select>
+          </div>
           <div className="flex items-center justify-between">
             <span className="text-xs text-muted-foreground">{username || "…"}</span>
             <button
@@ -83,7 +100,7 @@ export default function Shell({ children }: { children: React.ReactNode }) {
                 clearToken();
                 router.replace("/");
               }}
-              title="退出登录"
+              title="Logout"
             >
               <LogOut size={15} />
             </button>

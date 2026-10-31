@@ -3,11 +3,13 @@
 import { useCallback, useEffect, useState } from "react";
 import { BrainCircuit, Plus } from "lucide-react";
 import { get, post, put } from "@/lib/api";
+import { useT } from "@/lib/i18n";
 import { Badge, Button, Card, CardHeader, Empty, ErrorText, Spinner } from "@/components/ui";
 
 const KINDS = ["ENTERPRISE", "USER", "TASK", "KNOWLEDGE"] as const;
 
 export default function MemoryPage() {
+  const t = useT();
   const [items, setItems] = useState<any[]>([]);
   const [kind, setKind] = useState("");
   const [q, setQ] = useState("");
@@ -57,18 +59,18 @@ export default function MemoryPage() {
       <div className="mb-4 flex items-center justify-between">
         <div>
           <h1 className="flex items-center gap-2 text-xl font-bold">
-            <BrainCircuit size={20} /> 记忆中心
+            <BrainCircuit size={20} /> {t("mem.title")}
           </h1>
-          <p className="text-xs text-muted-foreground">企业记忆 / 用户偏好 / 任务记忆 / 专业知识库——Agent 不会每次重新认识你</p>
+          <p className="text-xs text-muted-foreground">{t("mem.sub")}</p>
         </div>
         <Button onClick={() => setAdding(!adding)} variant={adding ? "secondary" : "default"}>
-          <Plus size={14} /> 新增记忆
+          <Plus size={14} /> {t("mem.add")}
         </Button>
       </div>
 
       <div className="mb-3 flex gap-2">
         <select className="h-8 rounded-md border bg-background px-2 text-xs" value={kind} onChange={(e) => setKind(e.target.value)}>
-          <option value="">全部类型</option>
+          <option value="">{t("mem.allTypes")}</option>
           {KINDS.map((k) => (
             <option key={k} value={k}>
               {k}
@@ -77,7 +79,7 @@ export default function MemoryPage() {
         </select>
         <input
           className="h-8 flex-1 rounded-md border bg-background px-3 text-xs outline-none focus:ring-[3px] focus:ring-ring"
-          placeholder="检索记忆内容…"
+          placeholder={t("mem.searchPh")}
           value={q}
           onChange={(e) => setQ(e.target.value)}
         />
@@ -93,11 +95,11 @@ export default function MemoryPage() {
                 </option>
               ))}
             </select>
-            <input className="h-8 flex-1 rounded-md border bg-background px-3 text-xs" placeholder="标题" value={form.title} onChange={(e) => setForm({ ...form, title: e.target.value })} />
+            <input className="h-8 flex-1 rounded-md border bg-background px-3 text-xs" placeholder={t("mem.phTitle")} value={form.title} onChange={(e) => setForm({ ...form, title: e.target.value })} />
           </div>
           <textarea
             className="mt-2 min-h-[64px] w-full rounded-md border bg-background p-2 text-xs outline-none focus:ring-[3px] focus:ring-ring"
-            placeholder="内容（企业记忆由你写入即生效；Agent 写入的需要你确认）"
+            placeholder={t("mem.phContent")}
             value={form.content}
             onChange={(e) => setForm({ ...form, content: e.target.value })}
           />
@@ -117,7 +119,7 @@ export default function MemoryPage() {
         <Spinner />
       ) : items.length === 0 ? (
         <Card>
-          <Empty text="暂无记忆" />
+          <Empty text={t("mem.empty")} />
         </Card>
       ) : (
         <div className="grid gap-3 md:grid-cols-2">
@@ -142,12 +144,13 @@ export default function MemoryPage() {
 }
 
 function StatusActions({ m, onConfirm, onArchive }: { m: any; onConfirm: (id: string) => void; onArchive: (id: string) => void }) {
+  const t = useT();
   if (m.status === "PENDING") {
     return (
       <span className="flex shrink-0 items-center gap-1">
-        <Badge tone="yellow">待确认</Badge>
+        <Badge tone="yellow">{t("PENDING")}</Badge>
         <Button size="sm" variant="success" onClick={() => onConfirm(m.id)}>
-          采纳
+          {t("mem.confirm")}
         </Button>
       </span>
     );
@@ -155,8 +158,8 @@ function StatusActions({ m, onConfirm, onArchive }: { m: any; onConfirm: (id: st
   if (m.status === "ACTIVE") {
     return (
       <span className="shrink-0">
-        <Badge tone="green">生效</Badge>{" "}
-        <Button size="sm" variant="ghost" onClick={() => onArchive(m.id)} title="归档">
+        <Badge tone="green">{t("ACTIVE")}</Badge>{" "}
+        <Button size="sm" variant="ghost" onClick={() => onArchive(m.id)} title={t("mem.archive")}>
           归档
         </Button>
       </span>
