@@ -47,6 +47,8 @@ pub const TOOL_DEFS: &[ToolDef] = &[
     ToolDef { code: "listen.scan_keywords", name: "舆情扫描", category: "listening", description: "按关键词库扫描Google News RSS等公开源，产出需求信号（TikTok/抖音官方API待配置，走人工导入）", permission_level: "AUTO", input_schema: r#"{"business_unit_code":"string?"}"# },
     ToolDef { code: "listen.import_snippet", name: "舆情导入", category: "listening", description: "粘贴抖音/TikTok文案、评论或链接文本，提炼需求信号", permission_level: "AUTO", input_schema: r#"{"text":"string","business_unit_code":"string?","platform":"string?"}"# },
     ToolDef { code: "content.video_script", name: "视频脚本起草", category: "content", description: "按选题生成45-60秒口播视频脚本（需AI）", permission_level: "AUTO", input_schema: r#"{"topic":"string","business_unit_code":"string?","language":"string?"}"# },
+    ToolDef { code: "botarmy.lookup", name: "BOT军团SOP查询", category: "botarmy", description: "查DSH军团50岗清单或指定岗位的作业流程", permission_level: "AUTO", input_schema: r#"{"bot":"string?","query":"string?"}"# },
+    ToolDef { code: "botarmy.dispatch", name: "BOT军团派活", category: "botarmy", description: "向DSH军团队列投派活工单（审批制）", permission_level: "APPROVAL", input_schema: r#"{"team":"string","bot":"string","subject":"string","content":"string"}"# },
     ToolDef { code: "data.daily_report", name: "经营日报", category: "data", description: "汇总当日经营数据生成Markdown日报", permission_level: "AUTO", input_schema: r#"{}"# },
 ];
 
@@ -92,6 +94,8 @@ pub async fn dispatch(code: &str, args: Value, ctx: &ToolCtx<'_>) -> Result<Valu
         "crm.create_lead" => crm_create_lead(state, &args).await,
         "email.send_draft" => email_send(state, &args).await,
         "ecommerce.score_product" => score_product(state, &args).await,
+        "botarmy.lookup" => botarmy_lookup(&args),
+        "botarmy.dispatch" => botarmy_dispatch(&args).await,
         "listen.scan_keywords" => listen_scan(state, &args).await,
         "listen.import_snippet" => listen_import(state, ctx, &args).await,
         "content.video_script" => video_script(state, ctx, &args).await,
@@ -745,4 +749,123 @@ async fn video_script(state: &AppState, ctx: &ToolCtx<'_>, args: &Value) -> Resu
         .execute(state.pool())
         .await?;
     Ok(json!({"output": format!("视频脚本已入库：{title}"), "content_id": id, "tokens": reply.tokens, "mode": "ai"}))
+}
+
+
+// ---------- BOT 军团桥（DSH 50岗，技能真源 ~/.agents/skills/army-*） ----------
+
+fn botarmy_dir() -> std::path::PathBuf {
+    std::path::Path::new(&std::env::var("HOME").unwrap_or_default()).join(".agents/skills")
+}
+
+fn parse_skill_frontmatter(path: &std::path::Path) -> Option<(String, String)> {
+    let content = std::fs::read_to_string(path).ok()?;
+    let rest = content.strip_prefix("---")?;
+    let end = rest.find("---")?;
+    let fm = &rest[..end];
+    let mut name = String::new();
+    let mut desc = String::new();
+    for line in fm.lines() {
+        if let Some(v) = line.strip_prefix("name:") {
+            name = v.trim().to_string();
+        } else if let Some(v) = line.strip_prefix("description:") {
+            desc = v.trim().to_string();
+        }
+    }
+    if name.is_empty() {
+        return None;
+    }
+    Some((name, desc))
+}
+
+fn botarmy_bots() -> Vec<(String, String, String)> {
+    let dir = botarmy_dir();
+    let mut out = Vec::new();
+    if let Ok(entries) = std::fs::read_dir(&dir) {
+        for e in entries.flatten() {
+            let fname = e.file_name().to_string_lossy().to_string();
+            if !fname.starts_with("army-") {
+                continue;
+            }
+            let skill = e.path().join("SKILL.md");
+            if let Some((name, desc)) = parse_skill_frontmatter(&skill) {
+                out.push((fname, name, desc));
+            }
+        }
+    }
+    out.sort();
+    out
+}
+
+fn botarmy_lookup(args: &Value) -> Result<Value, AppError> {
+    let bot = take_str(args, "bot");
+    let query = take_str(args, "query");
+    let bots = botarmy_bots();
+    if bots.is_empty() {
+        return Err(AppError::not_configured("BOT 军团（~/.agents/skills/army-* 未找到）"));
+    }
+    if let Some(b) = bot {
+        if !b.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-' || c == '_') || b.contains("..") {
+            return Err(AppError::bad_request("非法岗位名"));
+        }
+        // 岗位目录真名前缀为 army-bot-*：短名依次尝试 army-bot-{b} / army-{b} / 原样
+        let candidates: Vec<String> = if b.starts_with("army-") {
+            vec![b.clone()]
+        } else {
+            vec![format!("army-bot-{b}"), format!("army-{b}")]
+        };
+        let mut content = None;
+        let mut full = String::new();
+        for cand in &candidates {
+            let path = botarmy_dir().join(cand).join("SKILL.md");
+            if let Ok(c) = std::fs::read_to_string(&path) {
+                content = Some(c);
+                full = cand.clone();
+                break;
+            }
+        }
+        let content = content.ok_or_else(|| AppError::not_found(format!("岗位 {b} 的 SKILL.md 不存在（ tried {:?}）", candidates)))?;
+        let body = content.split("---").nth(2).unwrap_or(&content).trim().to_string();
+        return Ok(json!({"output": format!("{} 作业流程（截断3000字）：\n{}", full, truncate(&body, 3000)), "bot": full, "mode": "sop_lookup"}));
+    }
+    let q = query.map(|s| s.to_lowercase());
+    let items: Vec<Value> = bots
+        .iter()
+        .filter(|(fname, name, desc)| {
+            q.as_ref()
+                .map(|qq| fname.contains(qq) || name.to_lowercase().contains(qq) || desc.to_lowercase().contains(qq))
+                .unwrap_or(true)
+        })
+        .map(|(fname, name, desc)| json!({"bot": fname, "name": name, "description": truncate(desc, 120)}))
+        .collect();
+    Ok(json!({"output": format!("BOT 军团共 {} 岗（匹配 {}）", bots.len(), items.len()), "bots": items, "mode": "list"}))
+}
+
+async fn botarmy_dispatch(args: &Value) -> Result<Value, AppError> {
+    let team = take_str(args, "team").ok_or_else(|| AppError::bad_request("缺少 team"))?;
+    let bot = take_str(args, "bot").ok_or_else(|| AppError::bad_request("缺少 bot"))?;
+    let subject = take_str(args, "subject").ok_or_else(|| AppError::bad_request("缺少 subject"))?;
+    let content = take_str(args, "content").ok_or_else(|| AppError::bad_request("缺少 content"))?;
+    if !bot.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-' || c == '_') || bot.contains("..") {
+        return Err(AppError::bad_request("非法 bot 名"));
+    }
+    let base = std::path::Path::new(&std::env::var("HOME").unwrap_or_default()).join("Doubao/BOT军团");
+    let team_dir = base.join(&team);
+    if !team_dir.is_dir() {
+        return Err(AppError::bad_request(format!("团目录不存在（白名单校验）: {team}")));
+    }
+    let returns_dir = team_dir.join("回报");
+    let stamp = chrono::Local::now().format("%Y%m%d-%H%M%S");
+    let safe_subject: String = subject.chars().filter(|c| !matches!(c, '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|')).take(30).collect();
+    let file = team_dir.join(format!("派活-{stamp}-{safe_subject}.md"));
+    let doc = format!(
+        "# 派活工单（来自 AI Workforce）\n\n- 时间：{}\n- 岗位：{}\n- 主题：{}\n- 授权：人工审批通过后投递（审批制，符合军团三红线：不代发布/不代下单/不绕风控）\n\n## 任务\n\n{}\n\n## 回报约定\n\n完成后写入 {} 同名文件。\n",
+        chrono::Local::now().format("%Y-%m-%d %H:%M"),
+        bot,
+        subject,
+        content,
+        if returns_dir.is_dir() { "回报/ 目录" } else { "团队目录" }
+    );
+    std::fs::write(&file, doc).map_err(|e| AppError::internal(format!("工单写入失败: {e}")))?;
+    Ok(json!({"output": format!("工单已投递：{}（岗位 {}）", file.display(), bot), "ticket": file.display().to_string(), "mode": "dispatched"}))
 }

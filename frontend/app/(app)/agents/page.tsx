@@ -15,12 +15,15 @@ export default function AgentsPage() {
   const [editing, setEditing] = useState<string | null>(null);
   const [prompt, setPrompt] = useState("");
   const [saving, setSaving] = useState(false);
+  const [bots, setBots] = useState<any[]>([]);
 
   const load = useCallback(async () => {
     try {
       const [a, t] = await Promise.all([get<any>("/api/v1/agents"), get<any>("/api/v1/tools")]);
       setAgents(a.items || []);
       setTools(t.items || []);
+        const b = await get<any>("/api/v1/botarmy");
+        setBots(b.items || []);
       setError(null);
     } catch (e: any) {
       setError(e.message);
@@ -128,6 +131,31 @@ export default function AgentsPage() {
                 <td className="px-4 py-2 text-muted-foreground">{tool.description}</td>
                 <td className="px-4 py-2">
                   <Badge tone={tool.permission_level === "APPROVAL" ? "yellow" : "green"}>{tool.permission_level === "APPROVAL" ? t("cmd.needApproval") : t("cmd.auto")}</Badge>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </Card>
+
+      <h2 className="mb-2 mt-8 text-lg font-semibold">{t("botarmy.title")}</h2>
+      <p className="mb-2 text-xs text-muted-foreground">{t("botarmy.desc")}</p>
+      <Card>
+        <table className="w-full text-xs">
+          <thead>
+            <tr className="border-b bg-accent/20 text-left text-muted-foreground">
+              <th className="px-4 py-2 font-medium">{t("botarmy.thBot")}</th>
+              <th className="px-4 py-2 font-medium">{t("botarmy.thDesc")}</th>
+              <th className="px-4 py-2 font-medium">{t("ag.thPerm")}</th>
+            </tr>
+          </thead>
+          <tbody>
+            {bots.map((b) => (
+              <tr key={b.bot} className="border-b last:border-0 hover:bg-accent/30">
+                <td className="px-4 py-2 font-mono">{b.bot}</td>
+                <td className="px-4 py-2 text-muted-foreground">{b.name}：{b.description}</td>
+                <td className="px-4 py-2">
+                  <Badge tone="green">SOP</Badge> <Badge tone="yellow">{t("botarmy.dispatchApproval")}</Badge>
                 </td>
               </tr>
             ))}

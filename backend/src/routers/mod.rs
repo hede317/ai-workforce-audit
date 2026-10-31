@@ -1,4 +1,5 @@
 mod agents;
+mod botarmy;
 mod business;
 mod core;
 mod data;
@@ -49,6 +50,7 @@ pub fn build_router(state: AppState) -> Router {
         // 线索
         .route("/api/v1/leads", get(business::list_leads).post(business::create_lead))
         // 舆情雷达
+        .route("/api/v1/botarmy", get(botarmy::list_bots))
         .route("/api/v1/listening/keywords", get(listening::list_keywords).post(listening::add_keyword))
         .route("/api/v1/listening/keywords/:id", axum::routing::delete(listening::delete_keyword))
         .route("/api/v1/listening/signals", get(listening::list_signals))
