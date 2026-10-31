@@ -11,9 +11,11 @@ use std::collections::HashMap;
 pub async fn list_topics(State(state): State<AppState>, _user: AuthUser, Query(q): Query<HashMap<String, String>>) -> ApiResult {
     // 审计#17：过滤条件下推 SQL，避免假空
     let rows: Vec<(String, Option<String>, String, Option<Value>, Option<String>, String, i32, String)> =
-        sqlx::query_as("SELECT id, business_unit_code, title, keywords, audience, language, priority, status FROM content_topics WHERE ($1::text IS NULL OR business_unit_code=$1) AND ($2::text IS NULL OR status=$2) ORDER BY created_at DESC LIMIT 200")
+        sqlx::query_as("SELECT id, business_unit_code, title, keywords, audience, language, priority, status FROM content_topics WHERE ($1::text IS NULL OR business_unit_code=$1) AND ($2::text IS NULL OR status=$2) ORDER BY created_at DESC LIMIT $3 OFFSET $4")
             .bind(q.get("business_unit_code"))
             .bind(q.get("status"))
+            .bind(q.get("page_size").and_then(|v| v.parse::<i64>().ok()).unwrap_or(200).clamp(1, 200))
+            .bind(((q.get("page").and_then(|v| v.parse::<i64>().ok()).unwrap_or(1).clamp(1, 1000)) - 1) * q.get("page_size").and_then(|v| v.parse::<i64>().ok()).unwrap_or(200).clamp(1, 200))
             .fetch_all(state.pool())
             .await?;
     let items: Vec<Value> = rows
@@ -132,9 +134,11 @@ pub async fn publish_content(
 
 pub async fn list_leads(State(state): State<AppState>, _user: AuthUser, Query(q): Query<HashMap<String, String>>) -> ApiResult {
     let rows: Vec<(String, Option<String>, Option<String>, Option<String>, Option<String>, Option<String>, String, String)> =
-        sqlx::query_as("SELECT id, business_unit_code, name, email, source_channel, country, lead_status, consent_status FROM leads WHERE ($1::text IS NULL OR business_unit_code=$1) AND ($2::text IS NULL OR lead_status=$2) ORDER BY created_at DESC LIMIT 200")
+        sqlx::query_as("SELECT id, business_unit_code, name, email, source_channel, country, lead_status, consent_status FROM leads WHERE ($1::text IS NULL OR business_unit_code=$1) AND ($2::text IS NULL OR lead_status=$2) ORDER BY created_at DESC LIMIT $3 OFFSET $4")
             .bind(q.get("business_unit_code"))
             .bind(q.get("lead_status"))
+            .bind(q.get("page_size").and_then(|v| v.parse::<i64>().ok()).unwrap_or(200).clamp(1, 200))
+            .bind(((q.get("page").and_then(|v| v.parse::<i64>().ok()).unwrap_or(1).clamp(1, 1000)) - 1) * q.get("page_size").and_then(|v| v.parse::<i64>().ok()).unwrap_or(200).clamp(1, 200))
             .fetch_all(state.pool())
             .await?;
     let items: Vec<Value> = rows

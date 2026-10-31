@@ -331,3 +331,74 @@ async fn audit_idempotency_failure_not_cached() {
     let (st2, v2) = send(app.clone(), build(key, json!({"title": "失败后重试主题"}))).await;
     assert!(st2.is_success(), "失败响应被缓存锁死了重试: {v2}");
 }
+
+#[tokio::test]
+async fn audit2_retry_approval_task_requeues_not_executes() {
+    let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    let (app, pool) = setup().await;
+    let token = login(&app).await;
+    let goal = format!("审批重试语义-{}", Uuid::new_v4().simple());
+    let (_, g) = send(app.clone(), req("POST", "/api/v1/commander/goals", Some(&token), Some(json!({"goal": goal})))).await;
+    let root_id = g["data"]["root_id"].as_str().unwrap().to_string();
+    let _ = send(app.clone(), req("POST", &format!("/api/v1/commander/goals/{root_id}/execute"), Some(&token), Some(json!({"sync": true})))).await;
+
+    // 找到审批型子任务（social.media），强制置为 Failed 模拟业务失败
+    let (_, tree) = send(app.clone(), req("GET", &format!("/api/v1/commander/goals/{root_id}"), Some(&token), None)).await;
+    let social = tree["data"]["children"].as_array().unwrap().iter().find(|c| c["agent_code"] == "social.media").unwrap();
+    let sid = social["id"].as_str().unwrap().to_string();
+    sqlx::query("UPDATE tasks SET status='Failed', error='simulate' WHERE id=$1").bind(&sid).execute(&pool).await.unwrap();
+    let before: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM publishing_tasks").fetch_one(&pool).await.unwrap();
+
+    // 重试：必须重新进审批，绝不能直接执行
+    let (_, r) = send(app.clone(), req("POST", &format!("/api/v1/tasks/{sid}/retry"), Some(&token), None)).await;
+    assert_eq!(r["data"]["status"], "Waiting Approval", "{r}");
+    let after: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM publishing_tasks").fetch_one(&pool).await.unwrap();
+    assert_eq!(before.0, after.0, "审批型任务重试绕过了审批直接执行！");
+    // 且产生了新的 PENDING 审批
+    let pend: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM approvals WHERE task_id=$1 AND status='PENDING'").bind(&sid).fetch_one(&pool).await.unwrap();
+    assert!(pend.0 >= 1);
+}
+
+#[tokio::test]
+async fn audit2_idempotency_stale_lock_recovered() {
+    let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    let (app, pool) = setup().await;
+    let token = login(&app).await;
+    let key = format!("stale-{}", Uuid::new_v4().simple());
+    // 模拟进程崩溃残留：15 分钟前的 NULL 占位
+    sqlx::query("INSERT INTO idempotency_keys (id, idem_key, endpoint, response, created_at) VALUES ($1,$2,'/api/v1/topics',NULL, now() - interval '15 minutes')")
+        .bind(Uuid::new_v4().simple().to_string()).bind(&key).execute(&pool).await.unwrap();
+    // 同键请求：陈锁应被回收并正常执行
+    let mut r = req("POST", "/api/v1/topics", Some(&token), Some(json!({"title": "陈锁恢复主题"})));
+    r.headers_mut().insert("Idempotency-Key", key.parse().unwrap());
+    let (st, v) = send(app, r).await;
+    assert!(st.is_success(), "陈锁未回收导致永久锁死: {v}");
+}
+
+#[tokio::test]
+async fn audit2_operator_isolation() {
+    let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    let (app, pool) = setup().await;
+    let admin_token = login(&app).await;
+    // 建 OPERATOR 用户
+    let _ = sqlx::query("INSERT INTO users (id, username, password_hash, role) VALUES ($1,'op-test',$2,'OPERATOR') ON CONFLICT (username) DO NOTHING")
+        .bind(Uuid::new_v4().simple().to_string())
+        .bind(ai_workforce::auth::hash_password("op-pass-123").unwrap())
+        .execute(&pool).await.unwrap();
+    let (st, v) = send(app.clone(), req("POST", "/api/v1/auth/login", None, Some(json!({"username": "op-test", "password": "op-pass-123"})))).await;
+    assert!(st.is_success(), "{v}");
+    let op_token = v["data"]["token"].as_str().unwrap().to_string();
+
+    // admin 建目标
+    let goal = format!("隔离测试-{}", Uuid::new_v4().simple());
+    let (_, g) = send(app.clone(), req("POST", "/api/v1/commander/goals", Some(&admin_token), Some(json!({"goal": goal})))).await;
+    let root_id = g["data"]["root_id"].as_str().unwrap().to_string();
+
+    // OPERATOR 列表看不到 admin 的任务
+    let (_, list) = send(app.clone(), req("GET", "/api/v1/tasks", Some(&op_token), None)).await;
+    let leaked = list["data"]["items"].as_array().unwrap().iter().any(|i| i["root_id"] == root_id.as_str());
+    assert!(!leaked, "OPERATOR 泄露了他人任务: {list}");
+    // OPERATOR 直读他人任务 → 404
+    let (st, _) = send(app.clone(), req("GET", &format!("/api/v1/commander/goals/{root_id}"), Some(&op_token), None)).await;
+    assert_eq!(st, StatusCode::NOT_FOUND);
+}

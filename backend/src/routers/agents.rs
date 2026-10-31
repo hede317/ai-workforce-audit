@@ -83,7 +83,7 @@ pub async fn get_goal(State(state): State<AppState>, _user: AuthUser, Path(id): 
         .bind(&id)
         .fetch_all(state.pool())
         .await?;
-    if rows.is_empty() {
+    if rows.is_empty() || (_user.0.role != "ADMIN" && rows[0].created_by.as_deref() != Some(_user.0.username.as_str())) {
         return Err(AppError::not_found("目标不存在"));
     }
     let root = &rows[0];
@@ -135,23 +135,36 @@ fn task_json(t: &Task) -> Value {
 }
 
 pub async fn list_tasks(State(state): State<AppState>, _user: AuthUser, Query(q): Query<HashMap<String, String>>) -> ApiResult {
+    // 二审P2-1：非 ADMIN 只能看到自己创建的任务
+    let is_admin = _user.0.role == "ADMIN";
+    let owner = _user.0.username.clone();
+    let page: i64 = q.get("page").and_then(|v| v.parse().ok()).unwrap_or(1).clamp(1, 1000);
+    let page_size: i64 = q.get("page_size").and_then(|v| v.parse().ok()).unwrap_or(50).clamp(1, 100);
+    let off = (page - 1) * page_size;
     let rows: Vec<Task> = if let Some(root) = q.get("root_id") {
-        sqlx::query_as("SELECT * FROM tasks WHERE root_id=$1 ORDER BY depth, created_at DESC LIMIT 200").bind(root).fetch_all(state.pool()).await?
+        sqlx::query_as("SELECT * FROM tasks WHERE root_id=$1 AND ($2 OR created_by=$3) ORDER BY depth, created_at DESC LIMIT 200")
+            .bind(root).bind(is_admin).bind(&owner).fetch_all(state.pool()).await?
     } else if let Some(status) = q.get("status") {
-        sqlx::query_as("SELECT * FROM tasks WHERE status=$1 ORDER BY created_at DESC LIMIT 100").bind(status).fetch_all(state.pool()).await?
+        sqlx::query_as("SELECT * FROM tasks WHERE status=$1 AND ($2 OR created_by=$3) ORDER BY created_at DESC LIMIT $4 OFFSET $5")
+            .bind(status).bind(is_admin).bind(&owner).bind(page_size).bind(off).fetch_all(state.pool()).await?
     } else {
-        sqlx::query_as("SELECT * FROM tasks ORDER BY created_at DESC LIMIT 100").fetch_all(state.pool()).await?
+        sqlx::query_as("SELECT * FROM tasks WHERE ($1 OR created_by=$2) ORDER BY created_at DESC LIMIT $3 OFFSET $4")
+            .bind(is_admin).bind(&owner).bind(page_size).bind(off).fetch_all(state.pool()).await?
     };
     let items: Vec<Value> = rows.iter().map(task_json).collect();
     ok(json!({"items": items, "total": items.len()}))
 }
 
-pub async fn get_task(State(state): State<AppState>, _user: AuthUser, Path(id): Path<String>) -> ApiResult {
+pub async fn get_task(State(state): State<AppState>, user: AuthUser, Path(id): Path<String>) -> ApiResult {
     let task: Task = sqlx::query_as("SELECT * FROM tasks WHERE id=$1")
         .bind(&id)
         .fetch_optional(state.pool())
         .await?
         .ok_or_else(|| AppError::not_found("任务不存在"))?;
+    // 二审P2-1：非 ADMIN 只能看自己的任务
+    if user.0.role != "ADMIN" && task.created_by.as_deref() != Some(user.0.username.as_str()) {
+        return Err(AppError::not_found("任务不存在"));
+    }
     let events: Vec<(String, String, Option<Value>)> =
         sqlx::query_as("SELECT event, created_at::text, payload FROM task_events WHERE task_id=$1 ORDER BY created_at")
             .bind(&id)
@@ -178,7 +191,20 @@ pub async fn retry_task(State(state): State<AppState>, user: AuthUser, Path(id):
         .execute(state.pool())
         .await?;
     let task: Task = sqlx::query_as("SELECT * FROM tasks WHERE id=$1").bind(&id).fetch_one(state.pool()).await?;
-    crate::orchestrator::execute_task(&state, &id, task.requires_approval).await?;
+    // 二审P2-5：审批型任务重试≠已授权——必须重新走审批，绝不直接执行敏感工具
+    if task.requires_approval {
+        let pending: Option<(String,)> =
+            sqlx::query_as("SELECT id FROM approvals WHERE task_id=$1 AND status='PENDING'").bind(&id).fetch_optional(state.pool()).await?;
+        if pending.is_none() {
+            crate::orchestrator::create_approval(&state, &task, &user.0.username).await?;
+        }
+        sqlx::query("UPDATE tasks SET status='Waiting Approval' WHERE id=$1").bind(&id).execute(state.pool()).await?;
+        if let Some(root) = &task.root_id {
+            crate::orchestrator::sync_root_status(&state, root).await?;
+        }
+        return ok(json!({"id": id, "status": "Waiting Approval", "note": "审批型任务重试已重新提交审批"}));
+    }
+    crate::orchestrator::execute_task(&state, &id, false).await?;
     if let Some(root) = &task.root_id {
         crate::orchestrator::sync_root_status(&state, root).await?;
     }
@@ -207,9 +233,13 @@ pub async fn cancel_task(State(state): State<AppState>, _user: AuthUser, Path(id
 pub async fn list_approvals(State(state): State<AppState>, _user: AuthUser, Query(q): Query<HashMap<String, String>>) -> ApiResult {
     let status = q.get("status").cloned().unwrap_or_else(|| "PENDING".into());
     // 审计#2：JOIN 任务携带工具与参数快照，审批人不再盲审
+    let is_admin = _user.0.role == "ADMIN";
+    let owner = _user.0.username.clone();
     let rows: Vec<(String, String, String, String, Option<String>, Option<String>, Option<String>, Option<String>, Option<String>, Option<String>, Option<serde_json::Value>)> =
-        sqlx::query_as("SELECT a.id, a.task_id, a.action, a.status, a.requested_by, a.decided_by, a.note, a.decided_at::text, t.tool_hint, t.agent_code, t.args FROM approvals a LEFT JOIN tasks t ON t.id=a.task_id WHERE a.status=$1 ORDER BY a.created_at DESC LIMIT 100")
+        sqlx::query_as("SELECT a.id, a.task_id, a.action, a.status, a.requested_by, a.decided_by, a.note, a.decided_at::text, t.tool_hint, t.agent_code, t.args FROM approvals a LEFT JOIN tasks t ON t.id=a.task_id WHERE a.status=$1 AND ($2 OR t.created_by=$3) ORDER BY a.created_at DESC LIMIT 100")
             .bind(&status)
+            .bind(is_admin)
+            .bind(&owner)
             .fetch_all(state.pool())
             .await?;
     let items: Vec<Value> = rows

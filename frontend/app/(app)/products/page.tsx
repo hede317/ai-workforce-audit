@@ -42,11 +42,18 @@ export default function ProductsPage() {
   }, [load]);
 
   async function add() {
-    if (!form.title) return;
-    await post("/api/v1/products", { ...form, price: Number(form.price) || 0 });
-    setForm({ ...form, title: "", price: "", source_url: "" });
-    setAdding(false);
-    load();
+    if (!form.title || busy) return;
+    setBusy(true);
+    try {
+      await post("/api/v1/products", { ...form, price: Number(form.price) || 0 });
+      setForm({ ...form, title: "", price: "", source_url: "" });
+      setAdding(false);
+      await load();
+    } catch (e: any) {
+      setError(e.message);
+    } finally {
+      setBusy(false);
+    }
   }
 
   async function score(id: string) {

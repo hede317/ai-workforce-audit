@@ -85,6 +85,14 @@ async fn idempotency_mw(State(state): State<AppState>, req: Request, next: Next)
     let endpoint = req.uri().path().to_string();
     match (is_post, key) {
         (true, Some(key)) => {
+            // 二审P1-2：先回收陈锁（进程崩溃残留的 NULL 占位），防幂等键永久锁死
+            let _ = sqlx::query(
+                "DELETE FROM idempotency_keys WHERE endpoint=$1 AND idem_key=$2 AND response IS NULL AND created_at < now() - interval '10 minutes'",
+            )
+            .bind(&endpoint)
+            .bind(&key)
+            .execute(state.pool())
+            .await;
             // 1. 原子抢占占位（response 为 NULL = 执行中）
             let claim = sqlx::query(
                 "INSERT INTO idempotency_keys (id, idem_key, endpoint, response) VALUES ($1,$2,$3,NULL) ON CONFLICT DO NOTHING",

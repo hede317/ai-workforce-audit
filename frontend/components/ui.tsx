@@ -63,7 +63,7 @@ export function Badge({ children, tone = "neutral", className }: { children: Rea
 }
 
 const STATUS_TONE: Record<string, Parameters<typeof Badge>[0]["tone"]> = {
-  Completed: "green", Running: "cyan", "Waiting Approval": "yellow", Failed: "red", Cancelled: "neutral",
+  Completed: "green", Running: "cyan", "Waiting Approval": "yellow", Failed: "red", Cancelled: "neutral", PartialFailed: "yellow",
   Rejected: "red", Created: "blue", Planning: "indigo", Assigned: "indigo", Paused: "yellow",
   APPROVED: "green", DRAFT: "neutral", NEW: "blue", HUMAN_QUEUE: "violet", PUBLISHED: "green",
   ACTIVE: "green", PENDING: "yellow",

@@ -180,6 +180,11 @@ fn take_str(args: &Value, key: &str) -> Option<String> {
     args.get(key).and_then(|v| v.as_str()).map(|s| s.to_string())
 }
 
+/// 二审P2-2：LIKE 通配符全量转义（% _ \）
+pub(crate) fn escape_like(input: &str) -> String {
+    input.replace('\\', "\\\\").replace('%', "\\%").replace('_', "\\_")
+}
+
 fn truncate(s: &str, n: usize) -> String {
     s.chars().take(n).collect()
 }
@@ -326,7 +331,11 @@ async fn video_mpt(state: &AppState, args: &Value) -> Result<Value, AppError> {
     if url.is_empty() {
         return Err(AppError::not_configured("MPT出片服务 (MPT_WORKER_URL)"));
     }
-    let resp = state.0.http.post(format!("{url}/render_mpt")).json(args).send().await
+    let parsed = reqwest::Url::parse(&format!("{url}/render_mpt")).map_err(|_| AppError::bad_request("MPT_WORKER_URL 无法解析"))?;
+    if parsed.scheme() != "http" && parsed.scheme() != "https" {
+        return Err(AppError::bad_request("MPT_WORKER_URL 仅允许 http/https"));
+    }
+    let resp = state.0.http_no_redirect.post(format!("{url}/render_mpt")).json(args).send().await
         .map_err(|e| AppError::internal(format!("MPT服务连接失败: {e}")))?;
     let payload: Value = resp.json().await.unwrap_or(json!({}));
     Ok(json!({"output": "已提交MPT出片任务", "provider_response": payload, "mode": "mpt"}))
@@ -362,7 +371,11 @@ async fn site_publish_wp(state: &AppState, args: &Value) -> Result<Value, AppErr
     }
     let title = take_str(args, "title").unwrap_or_else(|| "未命名".into());
     let body = take_str(args, "body").unwrap_or_default();
-    let resp = state.0.http.post(format!("{}/wp-json/wp/v2/posts", base.trim_end_matches('/')))
+    let parsed = reqwest::Url::parse(&base).map_err(|_| AppError::bad_request("wp.base_url 无法解析"))?;
+    if parsed.scheme() != "http" && parsed.scheme() != "https" {
+        return Err(AppError::bad_request("wp.base_url 仅允许 http/https"));
+    }
+    let resp = state.0.http_no_redirect.post(format!("{}/wp-json/wp/v2/posts", base.trim_end_matches('/')))
         .basic_auth(wp.get("username").and_then(|v| v.as_str()).unwrap_or(""), Some(wp.get("app_password").and_then(|v| v.as_str()).unwrap_or("")))
         .json(&json!({"title": title, "content": body, "status": "draft"}))
         .send().await.map_err(|e| AppError::internal(format!("WordPress连接失败: {e}")))?;
@@ -393,7 +406,8 @@ async fn memory_save(state: &AppState, args: &Value) -> Result<Value, AppError> 
 async fn memory_search(state: &AppState, args: &Value) -> Result<Value, AppError> {
     let q = take_str(args, "q").unwrap_or_default();
     let kind = take_str(args, "kind");
-    let limit: i64 = args.get("limit").and_then(|v| v.as_i64()).unwrap_or(5);
+    // 二审P2-3：limit 钳位，负数/超大值不再穿透
+    let limit: i64 = args.get("limit").and_then(|v| v.as_i64()).unwrap_or(5).clamp(1, 50);
     // 向量语义检索优先（配置了 EMBED_* 时）
     if state.0.cfg.embed_available() && !q.trim().is_empty() {
         let client = EmbedClient {
@@ -422,9 +436,9 @@ async fn memory_search(state: &AppState, args: &Value) -> Result<Value, AppError
             }
         }
     }
-    let like = format!("%{}%", q.replace('%', ""));
+    let like = format!("%{}%", escape_like(&q));
     let rows: Vec<(String, String, String, String)> = if let Some(k) = kind {
-        sqlx::query_as("SELECT id, kind, title, left(content, 300) FROM memories WHERE status='ACTIVE' AND kind=$1 AND (title LIKE $2 OR content LIKE $2) ORDER BY created_at DESC LIMIT $3")
+        sqlx::query_as("SELECT id, kind, title, left(content, 300) FROM memories WHERE status='ACTIVE' AND kind=$1 AND (title LIKE $2 ESCAPE '\\' OR content LIKE $2 ESCAPE '\\') ORDER BY created_at DESC LIMIT $3")
             .bind(k).bind(&like).bind(limit).fetch_all(state.pool()).await?
     } else {
         sqlx::query_as("SELECT id, kind, title, left(content, 300) FROM memories WHERE status='ACTIVE' AND (title LIKE $1 OR content LIKE $1) ORDER BY created_at DESC LIMIT $2")

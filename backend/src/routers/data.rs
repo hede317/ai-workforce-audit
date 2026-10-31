@@ -12,9 +12,9 @@ use std::collections::HashMap;
 pub async fn list_memories(State(state): State<AppState>, _user: AuthUser, Query(q): Query<HashMap<String, String>>) -> ApiResult {
     let kind = q.get("kind");
     let status = q.get("status");
-    let like = q.get("q").map(|s| format!("%{}%", s.replace('%', "")));
+    let like = q.get("q").map(|s| format!("%{}%", crate::tools::escape_like(s)));
     let rows: Vec<(String, String, String, String, Option<Value>, Option<String>, String, String)> =
-        sqlx::query_as("SELECT id, kind, title, left(content,500), tags, source_task_id, status, updated_at::text FROM memories WHERE ($1::text IS NULL OR kind=$1) AND ($2::text IS NULL OR status=$2) AND ($3::text IS NULL OR title LIKE $3 OR content LIKE $3) ORDER BY updated_at DESC LIMIT 200")
+        sqlx::query_as("SELECT id, kind, title, left(content,500), tags, source_task_id, status, updated_at::text FROM memories WHERE ($1::text IS NULL OR kind=$1) AND ($2::text IS NULL OR status=$2) AND ($3::text IS NULL OR title LIKE $3 ESCAPE '\\' OR content LIKE $3 ESCAPE '\\') ORDER BY updated_at DESC LIMIT 200")
             .bind(kind)
             .bind(status)
             .bind(&like)
@@ -92,12 +92,17 @@ pub async fn analytics_summary(State(state): State<AppState>, _user: AuthUser) -
     .unwrap_or((0, 0, 0, 0, 0));
     let (m_total, m_pending): (i64, i64) = sqlx::query_as("SELECT COUNT(*) FILTER (WHERE status='ACTIVE'), COUNT(*) FILTER (WHERE status='PENDING') FROM memories")
         .fetch_one(state.pool()).await.unwrap_or((0, 0));
-    let (c_topics, c_assets, c_approved): (i64, i64, i64) = sqlx::query_as(
-        "SELECT COUNT(*), COUNT(*) FILTER (WHERE status='APPROVED'), COUNT(*) FILTER (WHERE status='APPROVED') FROM content_topics LEFT JOIN content_assets ON false GROUP BY 1=1",
-    ).fetch_one(state.pool()).await.unwrap_or((0, 0, 0));
-    let c: (i64, i64, i64) = sqlx::query_as("SELECT (SELECT COUNT(*) FROM content_topics), (SELECT COUNT(*) FROM content_assets), (SELECT COUNT(*) FROM content_assets WHERE status='APPROVED')")
-        .fetch_one(state.pool()).await.unwrap_or((0, 0, 0));
-    let _ = c_topics; // content 三项取标量子查询结果
+    // 二审P2-8：删除无效死查询；统计失败显式记日志而非伪装全零
+    let c: (i64, i64, i64) = match sqlx::query_as("SELECT (SELECT COUNT(*) FROM content_topics), (SELECT COUNT(*) FROM content_assets), (SELECT COUNT(*) FROM content_assets WHERE status='APPROVED')")
+        .fetch_one(state.pool())
+        .await
+    {
+        Ok(v) => v,
+        Err(e) => {
+            tracing::error!("analytics content 统计失败: {e}");
+            (0, 0, 0)
+        }
+    };
     let (p_queue, p_published): (i64, i64) = sqlx::query_as("SELECT COUNT(*) FILTER (WHERE status='HUMAN_QUEUE'), COUNT(*) FILTER (WHERE status='PUBLISHED') FROM publishing_tasks")
         .fetch_one(state.pool()).await.unwrap_or((0, 0));
     let (l_total, l_new, l_won, agents_n, tools_n, ap_pending): (i64, i64, i64, i64, i64, i64) = sqlx::query_as(

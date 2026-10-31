@@ -39,19 +39,31 @@ export default function MemoryPage() {
   }, [load]);
 
   async function confirmPending(id: string) {
-    await put(`/api/v1/memories/${id}`, { status: "ACTIVE" });
-    load();
+    try {
+      await put(`/api/v1/memories/${id}`, { status: "ACTIVE" });
+      await load();
+    } catch (e: any) {
+      setError(e.message);
+    }
   }
   async function archive(id: string) {
-    await put(`/api/v1/memories/${id}`, { status: "ARCHIVED" });
-    load();
+    try {
+      await put(`/api/v1/memories/${id}`, { status: "ARCHIVED" });
+      await load();
+    } catch (e: any) {
+      setError(e.message);
+    }
   }
   async function add() {
     if (!form.title || !form.content) return;
-    await post("/api/v1/memories", form);
-    setForm({ kind: form.kind, title: "", content: "" });
-    setAdding(false);
-    load();
+    try {
+      await post("/api/v1/memories", form);
+      setForm({ kind: form.kind, title: "", content: "" });
+      setAdding(false);
+      await load();
+    } catch (e: any) {
+      setError(e.message);
+    }
   }
 
   return (
@@ -160,7 +172,7 @@ function StatusActions({ m, onConfirm, onArchive }: { m: any; onConfirm: (id: st
       <span className="shrink-0">
         <Badge tone="green">{t("ACTIVE")}</Badge>{" "}
         <Button size="sm" variant="ghost" onClick={() => onArchive(m.id)} title={t("mem.archive")}>
-          归档
+          {t("mem.archive")}
         </Button>
       </span>
     );

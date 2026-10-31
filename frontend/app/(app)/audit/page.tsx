@@ -55,7 +55,7 @@ export default function AuditPage() {
             <tbody>
               {items.map((a) => (
                 <tr key={a.id} className="border-b last:border-0 hover:bg-accent/30">
-                  <td className="px-4 py-2 font-mono text-muted-foreground">{(a.id || "").slice(0, 8)}</td>
+                  <td className="px-4 py-2 font-mono text-muted-foreground">{(a.created_at || "").replace("T", " ").slice(0, 19)}</td>
                   <td className="px-4 py-2">{a.user_id || "-"}</td>
                   <td className="px-4 py-2">
                     <span className="rounded bg-primary/10 px-1.5 py-0.5 font-medium text-[oklch(0.45_0.1_205)]">{a.action}</span>

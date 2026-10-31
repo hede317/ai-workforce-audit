@@ -7,7 +7,7 @@ use crate::tools::{dispatch, is_valid_tool, ToolCtx};
 use serde_json::{json, Value};
 use std::time::Duration;
 
-const TERMINAL: [&str; 4] = ["Completed", "Failed", "Cancelled", "Rejected"];
+const TERMINAL: [&str; 5] = ["Completed", "Failed", "Cancelled", "Rejected", "PartialFailed"];
 
 struct PlannedSubtask {
     title: String,
@@ -16,6 +16,14 @@ struct PlannedSubtask {
     tool_hint: Option<String>,
     args: Value,
     requires_approval: bool,
+}
+
+/// 审批快照哈希（serde_json Map 为有序序列化，输出稳定）
+fn args_hash(v: &Value) -> String {
+    use sha2::{Digest, Sha256};
+    let mut h = Sha256::new();
+    h.update(v.to_string());
+    format!("{:x}", h.finalize())
 }
 
 fn truncate(s: &str, n: usize) -> String {
@@ -30,6 +38,22 @@ async fn add_event(state: &AppState, task_id: &str, event: &str, payload: Value)
         .bind(payload)
         .execute(state.pool())
         .await;
+}
+
+/// 二审P1-3：审批创建即固化工具+参数快照+哈希（批准时校验未被篡改）
+pub(crate) async fn create_approval(state: &AppState, task: &Task, requested_by: &str) -> Result<(), AppError> {
+    let args = task.args.clone().unwrap_or(json!({}));
+    sqlx::query("INSERT INTO approvals (id, task_id, action, status, requested_by, tool_code, args_snapshot, args_hash) VALUES ($1,$2,$3,'PENDING',$4,$5,$6,$7)")
+        .bind(new_id())
+        .bind(&task.id)
+        .bind(truncate(&task.title, 200))
+        .bind(requested_by)
+        .bind(task.tool_hint.as_deref())
+        .bind(&args)
+        .bind(args_hash(&args))
+        .execute(state.pool())
+        .await?;
+    Ok(())
 }
 
 async fn set_task_status(state: &AppState, task_id: &str, status: &str) {
@@ -313,10 +337,14 @@ pub async fn execute_task(state: &AppState, task_id: &str, approved: bool) -> Re
             return finish_failed(state, &task, AppError::forbidden(format!("Agent {agent_code} 无权调用工具 {tool}（超出白名单）"))).await;
         }
     }
-    sqlx::query("UPDATE tasks SET status='Running', started_at=now() WHERE id=$1")
+    // 二审P2-4：原子状态抢占，杜绝并发双执行（先读后写竞态）
+    let claim = sqlx::query("UPDATE tasks SET status='Running', started_at=now() WHERE id=$1 AND status IN ('Created','Planning','Assigned') RETURNING id")
         .bind(task_id)
-        .execute(state.pool())
+        .fetch_optional(state.pool())
         .await?;
+    if claim.is_none() {
+        return Ok(()); // 已被其他执行者抢占或已终态
+    }
     add_event(state, task_id, "Running", json!({"approved": approved})).await;
 
     let tool_hint = task.tool_hint.clone();
@@ -373,12 +401,7 @@ pub async fn execute_task(state: &AppState, task_id: &str, approved: bool) -> Re
             let existing: Option<(String,)> =
                 sqlx::query_as("SELECT id FROM approvals WHERE task_id=$1 AND status='PENDING'").bind(task_id).fetch_optional(state.pool()).await?;
             if existing.is_none() {
-                sqlx::query("INSERT INTO approvals (id,task_id,action,status,requested_by) VALUES ($1,$2,$3,'PENDING','system')")
-                    .bind(new_id())
-                    .bind(task_id)
-                    .bind(truncate(&task.title, 200))
-                    .execute(state.pool())
-                    .await?;
+                create_approval(state, &task, "system").await?;
             }
             set_task_status(state, task_id, "Waiting Approval").await;
             add_event(state, task_id, "WaitingApproval", json!({"reason": e.message})).await;
@@ -415,12 +438,7 @@ pub async fn execute_goal(state: &AppState, root_id: &str) -> Result<Value, AppE
                     let pending: Option<(String,)> =
                         sqlx::query_as("SELECT id FROM approvals WHERE task_id=$1 AND status='PENDING'").bind(&child.id).fetch_optional(state.pool()).await?;
                     if pending.is_none() {
-                        sqlx::query("INSERT INTO approvals (id,task_id,action,status,requested_by) VALUES ($1,$2,$3,'PENDING','system')")
-                            .bind(new_id())
-                            .bind(&child.id)
-                            .bind(truncate(&child.title, 200))
-                            .execute(state.pool())
-                            .await?;
+                        create_approval(state, child, "system").await?;
                         set_task_status(state, &child.id, "Waiting Approval").await;
                         add_event(state, &child.id, "WaitingApproval", json!({"reason": "requires_approval"})).await;
                     }
@@ -462,9 +480,9 @@ pub async fn execute_goal(state: &AppState, root_id: &str) -> Result<Value, AppE
 
 /// 审批决定：批准→带授权执行；拒绝→任务取消
 pub async fn decide_approval(state: &AppState, approval_id: &str, decision: &str, decided_by: &str, note: &str) -> Result<Value, AppError> {
-    let approval: Option<(String, String, String)> =
-        sqlx::query_as("SELECT id, task_id, status FROM approvals WHERE id=$1").bind(approval_id).fetch_optional(state.pool()).await?;
-    let (_, task_id, status) = approval.ok_or_else(|| AppError::not_found("审批不存在"))?;
+    let approval: Option<(String, String, String, Option<String>)> =
+        sqlx::query_as("SELECT id, task_id, status, args_hash FROM approvals WHERE id=$1").bind(approval_id).fetch_optional(state.pool()).await?;
+    let (_, task_id, status, expected_hash) = approval.ok_or_else(|| AppError::not_found("审批不存在"))?;
     if status != "PENDING" {
         return Err(AppError::conflict(format!("该审批已处理（{status}）")));
     }
@@ -480,6 +498,17 @@ pub async fn decide_approval(state: &AppState, approval_id: &str, decision: &str
         .await?;
     match decision {
         "APPROVED" => {
+            // 二审P1-3：批准前校验任务参数与审批快照一致（防审批后偷换参数）
+            let current_task: Task = sqlx::query_as("SELECT * FROM tasks WHERE id=$1")
+                .bind(&task_id)
+                .fetch_one(state.pool())
+                .await?;
+            if let Some(expected) = &expected_hash {
+                let current = args_hash(&current_task.args.clone().unwrap_or(json!({})));
+                if *expected != current {
+                    return Err(AppError::conflict("审批后的任务参数已发生变化，必须重新提交审批"));
+                }
+            }
             set_task_status(state, &task_id, "Created").await;
             add_event(state, &task_id, "ApprovalGranted", json!({"by": decided_by})).await;
             execute_task(state, &task_id, true).await?;
@@ -534,7 +563,9 @@ pub async fn sync_root_status(state: &AppState, root_id: &str) -> Result<Value, 
         "Running"
     } else if waiting > 0 {
         "Waiting Approval"
-    } else if completed == 0 && failed > 0 {
+    } else if failed > 0 && completed > 0 {
+        "PartialFailed" // 二审P1-1：部分失败不再谎报 Completed
+    } else if failed > 0 {
         "Failed"
     } else {
         "Completed"

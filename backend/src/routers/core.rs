@@ -64,9 +64,14 @@ pub async fn create_bu(
     ok(json!({"id": id, "code": code}))
 }
 
-pub async fn list_audit(State(state): State<AppState>, _admin: AdminUser) -> ApiResult {
+pub async fn list_audit(State(state): State<AppState>, _admin: AdminUser, axum::extract::Query(q): axum::extract::Query<std::collections::HashMap<String, String>>) -> ApiResult {
+    // 二审P2-9：审计日志分页（长期运行必备）
+    let page: i64 = q.get("page").and_then(|v| v.parse().ok()).unwrap_or(1).clamp(1, 10000);
+    let page_size: i64 = q.get("page_size").and_then(|v| v.parse().ok()).unwrap_or(100).clamp(1, 200);
     let rows: Vec<(String, Option<String>, String, Option<String>, Option<String>, Option<Value>, String)> =
-        sqlx::query_as("SELECT id, user_id, action, entity, entity_id, detail, created_at::text FROM audit_logs ORDER BY created_at DESC LIMIT 100")
+        sqlx::query_as("SELECT id, user_id, action, entity, entity_id, detail, created_at::text FROM audit_logs ORDER BY created_at DESC LIMIT $1 OFFSET $2")
+            .bind(page_size)
+            .bind((page - 1) * page_size)
             .fetch_all(state.pool())
             .await?;
     let items: Vec<Value> = rows

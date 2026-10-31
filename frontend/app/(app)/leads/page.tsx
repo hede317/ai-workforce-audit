@@ -4,7 +4,11 @@ import { useCallback, useEffect, useState } from "react";
 import { UserRoundPlus } from "lucide-react";
 import { get, post } from "@/lib/api";
 import { useT } from "@/lib/i18n";
-import { Badge, Button, Card, CardHeader, Empty, ErrorText, Spinner, StatusBadge } from "@/components/ui";
+import { Badge, Button, Card, CardHeader, Empty, ErrorText, Spinner } from "@/components/ui";
+
+const LEAD_TONE: Record<string, "neutral" | "green" | "red" | "blue" | "indigo" | "violet" | "yellow"> = {
+  NEW: "blue", CONTACTED: "indigo", QUALIFIED: "violet", PROPOSAL: "yellow", WON: "green", LOST: "red",
+};
 
 export default function LeadsPage() {
   const t = useT();
@@ -110,8 +114,7 @@ export default function LeadsPage() {
                     </div>
                   </button>
                   <div className="flex items-center gap-1.5">
-                    <Badge tone="neutral">{l.lead_status}</Badge>
-                    <StatusBadge status={l.lead_status === "WON" ? "Completed" : "NEW"} />
+                    <Badge tone={LEAD_TONE[l.lead_status] || "neutral"}>{t(l.lead_status)}</Badge>
                   </div>
                 </div>
                 {openId === l.id ? (

@@ -39,11 +39,18 @@ export default function ContentPage() {
   }, [load]);
 
   async function addTopic() {
-    if (!form.title) return;
-    await post("/api/v1/topics", form);
-    setForm({ ...form, title: "", audience: "" });
-    setAdding(false);
-    load();
+    if (!form.title || busy) return;
+    setBusy(true);
+    try {
+      await post("/api/v1/topics", form);
+      setForm({ ...form, title: "", audience: "" });
+      setAdding(false);
+      await load();
+    } catch (e: any) {
+      setError(e.message);
+    } finally {
+      setBusy(false);
+    }
   }
 
   async function draftArticle(topic: any) {

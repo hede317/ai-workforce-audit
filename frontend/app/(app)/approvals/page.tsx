@@ -13,7 +13,8 @@ export default function ApprovalsPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [deciding, setDeciding] = useState<string | null>(null);
-  const [note, setNote] = useState("");
+  // 二审P2-11：批注按审批ID隔离
+  const [notes, setNotes] = useState<Record<string, string>>({});
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -35,9 +36,10 @@ export default function ApprovalsPage() {
   // 审计#25：批准/拒绝必须可填批注，不再硬编码
   async function decide(id: string, decision: "APPROVED" | "REJECTED") {
     try {
-      await post(`/api/v1/approvals/${id}/decide`, { decision, note: note || (decision === "APPROVED" ? "已批准" : "已拒绝") });
+      const currentNote = notes[id] || (decision === "APPROVED" ? "已批准" : "已拒绝");
+      await post(`/api/v1/approvals/${id}/decide`, { decision, note: currentNote });
       setDeciding(null);
-      setNote("");
+      setNotes((n) => ({ ...n, [id]: "" }));
       load();
     } catch (e: any) {
       setError(e.message);
@@ -83,8 +85,8 @@ export default function ApprovalsPage() {
                   <input
                     className="basis-full rounded-md border bg-background px-3 py-1.5 text-xs outline-none focus:ring-[3px] focus:ring-ring"
                     placeholder="批注：批准理由 / 拒绝原因（将记入审计）"
-                    value={note}
-                    onChange={(e) => setNote(e.target.value)}
+                    value={notes[a.id] || ""}
+                    onChange={(e) => setNotes((n) => ({ ...n, [a.id]: e.target.value }))}
                     autoFocus
                   />
                 ) : null}
@@ -95,7 +97,7 @@ export default function ApprovalsPage() {
                       <Button size="sm" variant="ghost" onClick={() => setDeciding(deciding === a.id ? null : a.id)}>
                         ✎
                       </Button>
-                      <Button size="sm" variant="success" onClick={() => (note || deciding === a.id ? decide(a.id, "APPROVED") : setDeciding(a.id))}>
+                      <Button size="sm" variant="success" onClick={() => (deciding === a.id || notes[a.id] ? decide(a.id, "APPROVED") : setDeciding(a.id))}>
                         <Check size={12} /> {t("c.approve")}
                       </Button>
                       <Button size="sm" variant="destructive" onClick={() => (deciding === a.id ? decide(a.id, "REJECTED") : setDeciding(a.id))}>
