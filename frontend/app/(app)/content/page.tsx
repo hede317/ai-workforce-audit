@@ -105,7 +105,7 @@ export default function ContentPage() {
           }
         />
         {adding ? (
-          <div className="border-b bg-[oklch(0.13_0_0)] px-4 py-3">
+          <div className="border-b bg-[oklch(0.955_0.02_205)] px-4 py-3">
             <div className="flex flex-wrap gap-2">
               <input className="h-8 min-w-[260px] flex-1 rounded-md border bg-background px-3 text-xs" placeholder={t("ct.phTitle")} value={form.title} onChange={(e) => setForm({ ...form, title: e.target.value })} />
               <select className="h-8 rounded-md border bg-background px-2 text-xs" value={form.business_unit_code} onChange={(e) => setForm({ ...form, business_unit_code: e.target.value })}>
@@ -128,7 +128,7 @@ export default function ContentPage() {
           <Empty text={t("ct.emptyTopics")} />
         ) : (
           <div className="divide-y">
-            {topics.slice(0, 12).map((t) => (
+            {topics.map((t) => (
               <div key={t.id} className="flex items-center justify-between gap-3 px-4 py-2.5 hover:bg-accent/40">
                 <div className="min-w-0">
                   <div className="truncate text-sm">{t.title}</div>
@@ -173,7 +173,7 @@ export default function ContentPage() {
                   </div>
                 </div>
                 {openId === c.id ? (
-                  <div className="bg-[oklch(0.13_0_0)] px-4 py-3">
+                  <div className="bg-[oklch(0.955_0.02_205)] px-4 py-3">
                     <pre className="max-h-72 overflow-auto whitespace-pre-wrap font-mono text-[11px] leading-relaxed text-muted-foreground">{body}</pre>
                   </div>
                 ) : null}

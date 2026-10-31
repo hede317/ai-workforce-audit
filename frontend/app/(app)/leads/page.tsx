@@ -115,7 +115,7 @@ export default function LeadsPage() {
                   </div>
                 </div>
                 {openId === l.id ? (
-                  <div className="bg-[oklch(0.13_0_0)] px-4 py-3">
+                  <div className="bg-[oklch(0.955_0.02_205)] px-4 py-3">
                     <div className="mb-2 text-xs text-muted-foreground">{t("crm.events")}</div>
                     <div className="space-y-1">
                       {events.map((ev) => (

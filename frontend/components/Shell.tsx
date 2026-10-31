@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
-import { Bot, BrainCircuit, FileText, Globe, LayoutDashboard, ListChecks, LogOut, SendHorizonal, ShieldCheck, ShoppingBag, Sparkles, UserRoundPlus } from "lucide-react";
+import { Bot, BrainCircuit, FileText, Globe, LayoutDashboard, ListChecks, LogOut, Megaphone, ScrollText, SendHorizonal, ShieldCheck, ShoppingBag, Sparkles, UserRoundPlus } from "lucide-react";
 import { clearToken, get } from "@/lib/api";
 import { LOCALES, useLocale } from "@/lib/i18n";
 import { cn } from "@/lib/cn";
@@ -15,10 +15,12 @@ const NAV = [
   { href: "/publishing", label: "nav.publishing", icon: SendHorizonal },
   { href: "/products", label: "nav.products", icon: ShoppingBag },
   { href: "/leads", label: "nav.leads", icon: UserRoundPlus },
+  { href: "/campaigns", label: "nav.mkt", icon: Megaphone },
   { href: "/tasks", label: "nav.tasks", icon: ListChecks },
   { href: "/agents", label: "nav.agents", icon: Bot },
   { href: "/approvals", label: "nav.approvals", icon: ShieldCheck },
   { href: "/memory", label: "nav.memory", icon: BrainCircuit },
+  { href: "/audit", label: "nav.audit", icon: ScrollText },
 ];
 
 export default function Shell({ children }: { children: React.ReactNode }) {
@@ -71,7 +73,7 @@ export default function Shell({ children }: { children: React.ReactNode }) {
                 <Icon size={16} />
                 <span className="flex-1">{t(label)}</span>
                 {href === "/approvals" && pending > 0 ? (
-                  <span className="rounded-full bg-yellow-400/15 px-1.5 py-0.5 text-[10px] font-medium text-[oklch(0.85_0.13_85)]">{pending}</span>
+                  <span className="rounded-full bg-yellow-400/15 px-1.5 py-0.5 text-[10px] font-medium text-[oklch(0.48_0.12_70)]">{pending}</span>
                 ) : null}
               </Link>
             );

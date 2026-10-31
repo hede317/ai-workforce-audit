@@ -2,25 +2,25 @@
 @tailwind components;
 @tailwind utilities;
 
-/* HedeYou AI Workforce — 暗色控制台设计令牌（OKLCH） */
+/* HedeYou AI Workforce — 淡青浅色主题设计令牌（OKLCH，用户裁决：不做黑色） */
 :root {
-  --background: 0.16 0 0;
-  --foreground: 0.97 0 0;
-  --card: 0.21 0 0;
-  --card-foreground: 0.97 0 0;
-  --primary: 0.62 0.17 264;
-  --primary-foreground: 0.98 0 0;
-  --secondary: 0.28 0 0;
-  --secondary-foreground: 0.97 0 0;
-  --muted: 0.27 0 0;
-  --muted-foreground: 0.71 0 0;
-  --accent: 0.3 0 0;
-  --accent-foreground: 0.97 0 0;
-  --destructive: 0.63 0.2 25;
-  --border: 0.98 0 0 / 0.1;
-  --ring: 0.62 0.17 264;
-  --success: 0.74 0.18 152;
-  --warning: 0.82 0.15 85;
+  --background: 0.97 0.015 200;
+  --foreground: 0.28 0.03 225;
+  --card: 0.995 0.008 200;
+  --card-foreground: 0.28 0.03 225;
+  --primary: 0.58 0.11 205;
+  --primary-foreground: 0.99 0.01 200;
+  --secondary: 0.92 0.03 200;
+  --secondary-foreground: 0.35 0.04 220;
+  --muted: 0.93 0.025 200;
+  --muted-foreground: 0.48 0.03 215;
+  --accent: 0.9 0.045 200;
+  --accent-foreground: 0.3 0.04 220;
+  --destructive: 0.55 0.19 25;
+  --border: 0.45 0.06 210 / 0.16;
+  --ring: 0.58 0.11 205;
+  --success: 0.55 0.14 155;
+  --warning: 0.62 0.13 75;
 }
 
 * {
@@ -38,7 +38,7 @@ body {
   height: 8px;
 }
 ::-webkit-scrollbar-thumb {
-  background: oklch(0.35 0 0);
+  background: oklch(0.75 0.04 205);
   border-radius: 8px;
 }
 ::-webkit-scrollbar-track {

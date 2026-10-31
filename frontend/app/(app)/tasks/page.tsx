@@ -105,7 +105,7 @@ export default function TasksPage() {
                   </div>
                 </div>
                 {open === t.id && detail ? (
-                  <div className="bg-[oklch(0.13_0_0)] px-4 py-3">
+                  <div className="bg-[oklch(0.955_0.02_205)] px-4 py-3">
                     <pre className="max-h-64 overflow-auto whitespace-pre-wrap font-mono text-[11px] leading-relaxed text-muted-foreground">
                       {JSON.stringify(detail, null, 2)}
                     </pre>

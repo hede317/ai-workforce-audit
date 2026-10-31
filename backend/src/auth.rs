@@ -30,14 +30,21 @@ pub struct Claims {
     pub username: String,
     pub role: String,
     pub exp: i64,
+    #[serde(default)]
+    pub pv: String,        // 密码特征值（存哈希尾8位）：改密后旧令牌立即失效
 }
 
-pub fn create_jwt(secret: &str, user_id: &str, username: &str, role: &str) -> Result<String, AppError> {
+pub fn hash_signature(password_hash: &str) -> String {
+    password_hash.chars().rev().take(8).collect::<String>().chars().rev().collect()
+}
+
+pub fn create_jwt(secret: &str, user_id: &str, username: &str, role: &str, pv: &str) -> Result<String, AppError> {
     let claims = Claims {
         sub: user_id.into(),
         username: username.into(),
         role: role.into(),
         exp: (Utc::now() + Duration::hours(24)).timestamp(),
+        pv: pv.into(),
     };
     encode(&Header::default(), &claims, &EncodingKey::from_secret(secret.as_bytes()))
         .map_err(|e| AppError::internal(format!("签发令牌失败: {e}")))
@@ -65,6 +72,20 @@ impl FromRequestParts<AppState> for AuthUser {
             .strip_prefix("Bearer ")
             .ok_or_else(|| AppError::unauthorized("Authorization 必须为 Bearer 令牌"))?;
         let claims = decode_jwt(&state.0.cfg.jwt_secret, token)?;
+        // 尾巴#5：pwd_ver 校验——改密/封禁后旧令牌立即失效
+        if !claims.pv.is_empty() {
+            let row: Option<(String,)> = sqlx::query_as("SELECT password_hash FROM users WHERE id=$1")
+                .bind(&claims.sub)
+                .fetch_optional(&state.0.pool)
+                .await
+                .map_err(|_| AppError::internal("令牌校验查询失败"))?;
+            let valid = row
+                .and_then(|(h,)| Some(hash_signature(&h) == claims.pv))
+                .unwrap_or(false);
+            if !valid {
+                return Err(AppError::unauthorized("令牌已失效（密码已更改或账号不可用），请重新登录"));
+            }
+        }
         Ok(AuthUser(claims))
     }
 }
@@ -90,7 +111,8 @@ pub fn new_id() -> String {
 
 /// 写审计日志（尽力而为，不阻塞业务）
 pub async fn audit(pool: &sqlx::PgPool, user_id: &str, action: &str, entity: &str, entity_id: &str, detail: serde_json::Value) {
-    let _ = sqlx::query(
+    // 修复：detail 直接绑 JSONB（此前绑 String 触发 text→jsonb 拒绝，导致全部审计静默失败）
+    if let Err(e) = sqlx::query(
         "INSERT INTO audit_logs (id, user_id, action, entity, entity_id, detail) VALUES ($1,$2,$3,$4,$5,$6)",
     )
     .bind(new_id())
@@ -98,9 +120,12 @@ pub async fn audit(pool: &sqlx::PgPool, user_id: &str, action: &str, entity: &st
     .bind(action)
     .bind(entity)
     .bind(entity_id)
-    .bind(serde_json::to_string(&detail).unwrap_or_default())
+    .bind(detail)
     .execute(pool)
-    .await;
+    .await
+    {
+        tracing::error!("审计日志写入失败: {e}");
+    }
 }
 
 /// 审批拍板权（红线：仅 ADMIN）

@@ -167,7 +167,7 @@ export default function CommanderPage() {
                 {c.result?.output ? (
                   <details className="mt-1.5">
                     <summary className="cursor-pointer text-xs text-muted-foreground hover:text-foreground">{t("cmd.viewOutput")}</summary>
-                    <pre className="mt-1 max-h-48 overflow-auto whitespace-pre-wrap rounded-md bg-[oklch(0.13_0_0)] p-3 font-mono text-[11px] leading-relaxed">{String(c.result.output)}</pre>
+                    <pre className="mt-1 max-h-48 overflow-auto whitespace-pre-wrap rounded-md bg-[oklch(0.955_0.02_205)] p-3 font-mono text-[11px] leading-relaxed">{String(c.result.output)}</pre>
                   </details>
                 ) : null}
               </div>

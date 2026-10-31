@@ -63,6 +63,7 @@ pub fn build_router(state: AppState) -> Router {
         .route("/api/v1/analytics/daily-report", get(data::daily_report))
         .route("/api/v1/workflows/trigger", post(data::trigger_workflow))
         .route("/api/v1/workflows/executions", get(data::list_executions))
+        .layer(axum::middleware::from_fn(request_id_mw))
         .layer(axum::middleware::from_fn_with_state(state.clone(), token_renewal_mw))
         .layer(axum::middleware::from_fn_with_state(state.clone(), idempotency_mw))
         .with_state(state)
@@ -139,6 +140,15 @@ async fn idempotency_mw(State(state): State<AppState>, req: Request, next: Next)
     }
 }
 
+/// 尾巴#3：每请求生成 Request-Id 并回写响应头，排障可关联
+async fn request_id_mw(req: Request, next: Next) -> Response {
+    let rid = axum::http::HeaderValue::from_str(&uuid::Uuid::new_v4().simple().to_string())
+        .unwrap_or_else(|_| axum::http::HeaderValue::from_static("unknown"));
+    let mut res = next.run(req).await;
+    res.headers_mut().insert("X-Request-Id", rid);
+    res
+}
+
 /// 令牌滑动续期（审计#3）：剩余 <6h 时自动签发新令牌放入响应头 X-Renewed-Token
 async fn token_renewal_mw(State(state): State<AppState>, req: Request, next: Next) -> Response {
     let auth = req
@@ -152,7 +162,7 @@ async fn token_renewal_mw(State(state): State<AppState>, req: Request, next: Nex
         if let Ok(claims) = crate::auth::decode_jwt(&state.0.cfg.jwt_secret, &token) {
             let remain = claims.exp - chrono::Utc::now().timestamp();
             if remain > 0 && remain < 6 * 3600 {
-                if let Ok(new_tok) = crate::auth::create_jwt(&state.0.cfg.jwt_secret, &claims.sub, &claims.username, &claims.role) {
+                if let Ok(new_tok) = crate::auth::create_jwt(&state.0.cfg.jwt_secret, &claims.sub, &claims.username, &claims.role, &claims.pv) {
                     let mut res = res;
                     if let Ok(v) = axum::http::HeaderValue::from_str(&new_tok) {
                         res.headers_mut().insert("X-Renewed-Token", v);

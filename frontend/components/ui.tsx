@@ -31,7 +31,7 @@ export function Button({
     secondary: "bg-secondary text-secondary-foreground hover:bg-accent",
     ghost: "hover:bg-accent hover:text-accent-foreground",
     destructive: "bg-destructive text-white hover:opacity-90",
-    success: "bg-success text-[oklch(0.2_0_0)] hover:opacity-90",
+    success: "bg-success text-white hover:opacity-90",
   };
   return (
     <button
@@ -51,13 +51,13 @@ export function Button({
 export function Badge({ children, tone = "neutral", className }: { children: React.ReactNode; tone?: "neutral" | "green" | "cyan" | "yellow" | "red" | "blue" | "indigo" | "violet"; className?: string }) {
   const tones: Record<string, string> = {
     neutral: "bg-muted text-muted-foreground",
-    green: "bg-[oklch(0.74_0.18_152/0.15)] text-[oklch(0.8_0.16_152)]",
-    cyan: "bg-[oklch(0.78_0.12_210/0.15)] text-[oklch(0.82_0.11_210)]",
-    yellow: "bg-[oklch(0.82_0.15_85/0.15)] text-[oklch(0.85_0.13_85)]",
-    red: "bg-[oklch(0.63_0.2_25/0.15)] text-[oklch(0.7_0.18_25)]",
-    blue: "bg-[oklch(0.62_0.17_250/0.15)] text-[oklch(0.72_0.14_250)]",
-    indigo: "bg-[oklch(0.6_0.19_285/0.15)] text-[oklch(0.72_0.15_285)]",
-    violet: "bg-[oklch(0.6_0.21_320/0.15)] text-[oklch(0.73_0.16_320)]",
+    green: "bg-[oklch(0.55_0.14_155/0.14)] text-[oklch(0.42_0.13_155)]",
+    cyan: "bg-[oklch(0.55_0.1_210/0.14)] text-[oklch(0.45_0.1_215)]",
+    yellow: "bg-[oklch(0.85_0.14_85/0.22)] text-[oklch(0.5_0.12_70)]",
+    red: "bg-[oklch(0.55_0.2_25/0.12)] text-[oklch(0.48_0.18_25)]",
+    blue: "bg-[oklch(0.58_0.15_245/0.13)] text-[oklch(0.46_0.14_250)]",
+    indigo: "bg-[oklch(0.55_0.18_285/0.13)] text-[oklch(0.45_0.16_285)]",
+    violet: "bg-[oklch(0.55_0.2_320/0.13)] text-[oklch(0.47_0.17_320)]",
   };
   return <span className={cn("inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium", tones[tone], className)}>{children}</span>;
 }
@@ -105,7 +105,7 @@ export function Empty({ text }: { text?: string }) {
 
 export function ErrorText({ message }: { message?: string | null }) {
   if (!message) return null;
-  return <div className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-xs text-[oklch(0.75_0.15_25)]">{message}</div>;
+  return <div className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-xs text-[oklch(0.45_0.18_25)]">{message}</div>;
 }
 
 export function Spinner({ text }: { text?: string }) {

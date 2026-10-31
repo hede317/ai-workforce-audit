@@ -31,7 +31,7 @@ export default function LoginPage() {
   }
 
   return (
-    <div className="flex min-h-screen items-center justify-center bg-[radial-gradient(ellipse_at_top,oklch(0.25_0.06_264),oklch(0.16_0_0))]">
+    <div className="flex min-h-screen items-center justify-center bg-[radial-gradient(ellipse_at_top,oklch(0.99_0.02_200),oklch(0.93_0.045_205))]">
       <Card className="w-full max-w-sm p-8">
         <div className="mb-6 flex flex-col items-center gap-2">
           <div className="flex h-12 w-12 items-center justify-center rounded-xl bg-primary text-primary-foreground">

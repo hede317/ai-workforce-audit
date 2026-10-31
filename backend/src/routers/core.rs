@@ -18,7 +18,7 @@ pub async fn login(State(state): State<AppState>, Json(body): Json<Value>) -> Ap
     if !verify_password(password, &hash) {
         return Err(AppError::unauthorized("用户名或密码错误"));
     }
-    let token = create_jwt(&state.0.cfg.jwt_secret, &id, &uname, &role)?;
+    let token = create_jwt(&state.0.cfg.jwt_secret, &id, &uname, &role, &crate::auth::hash_signature(&hash))?;
     audit(state.pool(), &id, "login", "user", &id, json!({})).await;
     ok(json!({"token": token, "username": uname, "role": role}))
 }
@@ -65,14 +65,14 @@ pub async fn create_bu(
 }
 
 pub async fn list_audit(State(state): State<AppState>, _admin: AdminUser) -> ApiResult {
-    let rows: Vec<(String, Option<String>, String, Option<String>, Option<String>, Option<Value>)> =
-        sqlx::query_as("SELECT id, user_id, action, entity, entity_id, detail FROM audit_logs ORDER BY created_at DESC LIMIT 100")
+    let rows: Vec<(String, Option<String>, String, Option<String>, Option<String>, Option<Value>, String)> =
+        sqlx::query_as("SELECT id, user_id, action, entity, entity_id, detail, created_at::text FROM audit_logs ORDER BY created_at DESC LIMIT 100")
             .fetch_all(state.pool())
             .await?;
     let items: Vec<Value> = rows
         .into_iter()
-        .map(|(id, user_id, action, entity, entity_id, detail)| {
-            json!({"id": id, "user_id": user_id, "action": action, "entity": entity, "entity_id": entity_id, "detail": detail})
+        .map(|(id, user_id, action, entity, entity_id, detail, at)| {
+            json!({"id": id, "user_id": user_id, "action": action, "entity": entity, "entity_id": entity_id, "detail": detail, "created_at": at})
         })
         .collect();
     ok(json!({"items": items}))
