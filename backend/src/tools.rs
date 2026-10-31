@@ -556,10 +556,11 @@ async fn score_product(state: &AppState, args: &Value) -> Result<Value, AppError
         sqlx::query_as("SELECT title, source_url, price, decision_note FROM product_candidates WHERE id=$1")
             .bind(&pid).fetch_optional(state.pool()).await?;
     let (title, source_url, price, note) = row.ok_or_else(|| AppError::not_found("选品不存在"))?;
+    // 二审后升级：评分框架 = Pattern Disruption 选品方法论（借势风口/10%差异化/自带传播点/低成本验证）
     let reply = call_ai(
         state,
-        "你是跨境电商选品分析师。对商品做客观分析，只输出JSON。",
-        &format!("商品：{title}\n参考链接：{}\n售价：{price}\n既有备注：{}\n\n输出JSON：{{\"demand_score\":1-10需求分,\"competition_score\":1-10竞争分,\"est_cost\":估算成本,\"est_margin_pct\":估算毛利率百分比,\"decision_note\":\"三行以内结论\"}}",
+        "你是跨境电商选品分析师，用 Pattern Disruption 框架做客观分析，只输出JSON。",
+        &format!("商品：{title}\n参考链接：{}\n售价：{price}\n既有备注：{}\n\n按五维评估：①借势风口——是否挂在已验证的大品类/热门趋势上（如水杯配件借势Stanley）②10%差异化——是否在成熟市场找到被忽略的细分缺口（做1→1.1，不做0→1）③自带传播点——产品是否可晒可谈有社交货币④低成本原型验证——能否小批量快测⑤供应链与毛利。\n输出JSON：{{\"demand_score\":1-10借势与需求,\"competition_score\":1-10竞争强度,\"est_cost\":估算成本,\"est_margin_pct\":估算毛利率百分比,\"decision_note\":\"三行：借势对象是什么/10%差异化点是什么/第一个低成本验证动作是什么\"}}",
             source_url.as_deref().unwrap_or("无"), note.as_deref().unwrap_or("无")),
         1200,
     ).await?;
