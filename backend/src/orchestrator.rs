@@ -132,7 +132,7 @@ async fn ai_plan(
         &[
             ChatMessage {
                 role: "system".into(),
-                content: "你是 HedeYou AI Workforce 的 CEO Agent（总经理），职责是把经营目标拆解为可执行任务并分配给专业 Agent。只输出 JSON，不要输出其他文字。".into(),
+                content: "你是老何，HedeYou AI Workforce 的幕僚长，直接对德友（用户）负责。你听到德友的目标后，把它拆解为可执行任务并分配给专业 Agent。只输出 JSON，不要输出其他文字。".into(),
             },
             ChatMessage {
                 role: "user".into(),
@@ -223,7 +223,7 @@ pub async fn create_goal(state: &AppState, goal: &str, bu_code: Option<String>, 
         "goal": goal,
         "subtasks": subtasks.iter().map(|s| json!({"title": s.title, "agent_code": s.agent_code, "tool": s.tool_hint})).collect::<Vec<_>>(),
     });
-    sqlx::query("INSERT INTO tasks (id,title,goal,business_unit_code,agent_code,status,depth,plan,created_by) VALUES ($1,$2,$3,$4,'ceo','Planning',0,$5,$6)")
+    sqlx::query("INSERT INTO tasks (id,title,goal,business_unit_code,agent_code,status,depth,plan,created_by) VALUES ($1,$2,$3,$4,'chief-of-staff','Planning',0,$5,$6)")
         .bind(&root_id)
         .bind(truncate(&goal, 80))
         .bind(&goal)

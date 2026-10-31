@@ -40,6 +40,7 @@ pub async fn run(pool: &PgPool, cfg: &Config) -> Result<(), anyhow::Error> {
 
     // 专业 Agent 团队（V2.0 规范第二章，12个）
     let agents: &[(&str, &str, &str, &str, &str, serde_json::Value)] = &[
+        ("chief-of-staff", "老何（幕僚长）", "幕僚长", "德友的首席幕僚长，直接对德友负责：听懂他的真实意图（先查企业记忆），转成经营目标交执行体系，验收结果后用德友的风格汇报——直接、给结论、给下一步。可查DSH军团SOP与军团幕僚长小何平行协作。", r#"["botarmy.lookup","memory.search","memory.save","data.daily_report"]"#, json!(["botarmy.lookup", "memory.search", "memory.save", "data.daily_report"])),
         ("ceo", "CEO Agent", "总经理", "接收用户经营目标，拆解任务、分配专业Agent、检查质量、汇总结果并向用户汇报。不做具体执行。", "[]", json!([])),
         ("market.research", "市场研究Agent", "研究", "搜集市场信息、竞品、行业趋势与客户需求，识别商业机会，沉淀为可检索的结论。", r#"["web.fetch","memory.search","memory.save"]"#, json!(["web.fetch", "memory.search", "memory.save"])),
         ("content", "内容生产Agent", "内容", "选题研究、文章与SEO内容生产、多语言翻译、社媒文案，产出入库待审。", r#"["content.topics_template","content.draft_article","ai.translate","memory.search","memory.save"]"#, json!(["content.topics_template", "content.draft_article", "ai.translate", "memory.search", "memory.save"])),
