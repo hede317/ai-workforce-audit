@@ -99,16 +99,16 @@ export default function PublishingPage() {
           <Empty text={t("pub.empty")} />
         ) : (
           <div className="divide-y">
-            {tasks.map((t) => (
-              <div key={t.id} className="px-4 py-3">
+            {tasks.map((task) => (
+              <div key={task.id} className="px-4 py-3">
                 <div className="flex items-center justify-between gap-3">
                   <div className="min-w-0">
                     <div className="truncate text-sm">
-                      <Badge tone="blue">{t.platform}</Badge> <span className="ms-1">{(t.payload as any)?.title || t.id.slice(0, 12)}</span>
+                      <Badge tone="blue">{task.platform}</Badge> <span className="ms-1">{(task.payload as any)?.title || task.id.slice(0, 12)}</span>
                     </div>
-                    {t.results?.length ? (
+                    {task.results?.length ? (
                       <div className="mt-0.5 text-xs text-muted-foreground">
-                        {t.results.map((r: any, i: number) => (
+                        {task.results.map((r: any, i: number) => (
                           <span key={i} className="me-2">
                             {r.published_url ? (
                               <a href={r.published_url} target="_blank" rel="noreferrer" className="underline hover:text-foreground">
@@ -124,15 +124,15 @@ export default function PublishingPage() {
                     ) : null}
                   </div>
                   <div className="flex shrink-0 items-center gap-1.5">
-                    {t.status === "HUMAN_QUEUE" ? (
-                      <Button size="sm" variant="secondary" onClick={() => setFilling(filling === t.id ? null : t.id)}>
+                    {task.status === "HUMAN_QUEUE" ? (
+                      <Button size="sm" variant="secondary" onClick={() => setFilling(filling === task.id ? null : task.id)}>
                         {t("pub.fill")}
                       </Button>
                     ) : null}
-                    <StatusBadge status={t.status} />
+                    <StatusBadge status={task.status} />
                   </div>
                 </div>
-                {filling === t.id ? (
+                {filling === task.id ? (
                   <div className="mt-2 flex flex-wrap gap-2">
                     <input
                       className="h-8 min-w-[240px] flex-1 rounded-md border bg-background px-3 text-xs outline-none focus:ring-[3px] focus:ring-ring"
@@ -146,7 +146,7 @@ export default function PublishingPage() {
                       value={fill.platform_post_id}
                       onChange={(e) => setFill({ ...fill, platform_post_id: e.target.value })}
                     />
-                    <Button size="sm" variant="success" onClick={() => submitResult(t.id)}>
+                    <Button size="sm" variant="success" onClick={() => submitResult(task.id)}>
                       {t("pub.confirmPub")}
                     </Button>
                   </div>

@@ -121,13 +121,13 @@ export default function AgentsPage() {
             </tr>
           </thead>
           <tbody>
-            {tools.map((t) => (
-              <tr key={t.id} className="border-b last:border-0 hover:bg-accent/30">
-                <td className="px-4 py-2 font-mono">{t.code}</td>
-                <td className="px-4 py-2">{t.category}</td>
-                <td className="px-4 py-2 text-muted-foreground">{t.description}</td>
+            {tools.map((tool) => (
+              <tr key={tool.id} className="border-b last:border-0 hover:bg-accent/30">
+                <td className="px-4 py-2 font-mono">{tool.code}</td>
+                <td className="px-4 py-2">{tool.category}</td>
+                <td className="px-4 py-2 text-muted-foreground">{tool.description}</td>
                 <td className="px-4 py-2">
-                  <Badge tone={t.permission_level === "APPROVAL" ? "yellow" : "green"}>{t.permission_level === "APPROVAL" ? t("cmd.needApproval") : t("cmd.auto")}</Badge>
+                  <Badge tone={tool.permission_level === "APPROVAL" ? "yellow" : "green"}>{tool.permission_level === "APPROVAL" ? t("cmd.needApproval") : t("cmd.auto")}</Badge>
                 </td>
               </tr>
             ))}

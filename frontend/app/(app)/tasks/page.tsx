@@ -93,7 +93,7 @@ export default function TasksPage() {
                   <div className="flex shrink-0 items-center gap-1.5">
                     {t.status === "Failed" ? (
                       <Button size="sm" variant="secondary" onClick={() => retry(t.id)}>
-                        <RotateCcw size={12} /> {tr("c.refresh")}
+                        <RotateCcw size={12} /> {tr("c.retry")}
                       </Button>
                     ) : null}
                     {["Created", "Waiting Approval", "Assigned", "Planning"].includes(t.status) ? (
