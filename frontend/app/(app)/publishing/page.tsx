@@ -104,12 +104,12 @@ export default function PublishingPage() {
                 <div className="flex items-center justify-between gap-3">
                   <div className="min-w-0">
                     <div className="truncate text-sm">
-                      <Badge tone="blue">{t.platform}</Badge> <span className="ml-1">{(t.payload as any)?.title || t.id.slice(0, 12)}</span>
+                      <Badge tone="blue">{t.platform}</Badge> <span className="ms-1">{(t.payload as any)?.title || t.id.slice(0, 12)}</span>
                     </div>
                     {t.results?.length ? (
                       <div className="mt-0.5 text-xs text-muted-foreground">
                         {t.results.map((r: any, i: number) => (
-                          <span key={i} className="mr-2">
+                          <span key={i} className="me-2">
                             {r.published_url ? (
                               <a href={r.published_url} target="_blank" rel="noreferrer" className="underline hover:text-foreground">
                                 {r.published_url}

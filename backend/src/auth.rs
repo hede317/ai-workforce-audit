@@ -102,3 +102,33 @@ pub async fn audit(pool: &sqlx::PgPool, user_id: &str, action: &str, entity: &st
     .execute(pool)
     .await;
 }
+
+/// 审批拍板权（红线：仅 ADMIN）
+pub struct ApproverUser(pub Claims);
+
+#[axum::async_trait]
+impl FromRequestParts<AppState> for ApproverUser {
+    type Rejection = AppError;
+    async fn from_request_parts(parts: &mut Parts, state: &AppState) -> Result<Self, Self::Rejection> {
+        let user = AuthUser::from_request_parts(parts, state).await?;
+        if user.0.role != "ADMIN" {
+            return Err(AppError::forbidden("审批拍板需要 ADMIN 角色（不能自己批自己的任务）"));
+        }
+        Ok(ApproverUser(user.0))
+    }
+}
+
+/// 内容与知识编辑权（ADMIN | EDITOR）
+pub struct EditorUser(pub Claims);
+
+#[axum::async_trait]
+impl FromRequestParts<AppState> for EditorUser {
+    type Rejection = AppError;
+    async fn from_request_parts(parts: &mut Parts, state: &AppState) -> Result<Self, Self::Rejection> {
+        let user = AuthUser::from_request_parts(parts, state).await?;
+        if user.0.role != "ADMIN" && user.0.role != "EDITOR" {
+            return Err(AppError::forbidden("需要 EDITOR 或 ADMIN 角色"));
+        }
+        Ok(EditorUser(user.0))
+    }
+}

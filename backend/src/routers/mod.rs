@@ -63,6 +63,7 @@ pub fn build_router(state: AppState) -> Router {
         .route("/api/v1/analytics/daily-report", get(data::daily_report))
         .route("/api/v1/workflows/trigger", post(data::trigger_workflow))
         .route("/api/v1/workflows/executions", get(data::list_executions))
+        .layer(axum::middleware::from_fn_with_state(state.clone(), token_renewal_mw))
         .layer(axum::middleware::from_fn_with_state(state.clone(), idempotency_mw))
         .with_state(state)
 }
@@ -71,44 +72,95 @@ async fn health() -> &'static str {
     "ok"
 }
 
-/// 幂等中间件：带 Idempotency-Key 的 POST 不会重复产生副作用（规范第十部分）
+/// 幂等中间件 v2（审计#4）：原子抢占防 TOCTOU 竞态；仅缓存 2xx；失败删除占位允许重试
 async fn idempotency_mw(State(state): State<AppState>, req: Request, next: Next) -> Response {
     let key = req
         .headers()
         .get("Idempotency-Key")
         .and_then(|v| v.to_str().ok())
-        .map(|s| s.to_string());
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
     let is_post = req.method() == axum::http::Method::POST;
     let endpoint = req.uri().path().to_string();
     match (is_post, key) {
         (true, Some(key)) => {
-            let existing: Option<(serde_json::Value,)> =
-                sqlx::query_as("SELECT response FROM idempotency_keys WHERE idem_key=$1 AND endpoint=$2")
-                    .bind(&key)
-                    .bind(&endpoint)
-                    .fetch_optional(state.pool())
-                    .await
-                    .ok()
-                    .flatten();
-            if let Some((body,)) = existing {
-                return axum::Json(body).into_response();
+            // 1. 原子抢占占位（response 为 NULL = 执行中）
+            let claim = sqlx::query(
+                "INSERT INTO idempotency_keys (id, idem_key, endpoint, response) VALUES ($1,$2,$3,NULL) ON CONFLICT DO NOTHING",
+            )
+            .bind(new_id())
+            .bind(&key)
+            .bind(&endpoint)
+            .execute(state.pool())
+            .await;
+            match claim {
+                Ok(res) if res.rows_affected() == 0 => {
+                    // 已被抢占：有结果回放结果，无结果=处理中
+                    let existing: Option<(Option<serde_json::Value>,)> =
+                        sqlx::query_as("SELECT response FROM idempotency_keys WHERE endpoint=$1 AND idem_key=$2")
+                            .bind(&endpoint)
+                            .bind(&key)
+                            .fetch_optional(state.pool())
+                            .await
+                            .ok()
+                            .flatten();
+                    return match existing {
+                        Some((Some(body),)) => (axum::http::StatusCode::OK, axum::Json(body)).into_response(),
+                        _ => crate::error::AppError::conflict("相同幂等键的请求正在处理中，请稍后重试").into_response(),
+                    };
+                }
+                Err(_) => return next.run(req).await, // 抢占本身失败时不拦截业务
+                _ => {}
             }
+            // 2. 执行业务
             let res = next.run(req).await;
             let (parts, body) = res.into_parts();
-            let bytes = axum::body::to_bytes(body, 2_000_000).await.unwrap_or_default();
-            if let Ok(value) = serde_json::from_slice::<serde_json::Value>(&bytes) {
-                let _ = sqlx::query(
-                    "INSERT INTO idempotency_keys (id, idem_key, endpoint, response) VALUES ($1,$2,$3,$4) ON CONFLICT (idem_key) DO NOTHING",
-                )
-                .bind(new_id())
-                .bind(&key)
-                .bind(&endpoint)
-                .bind(&value)
-                .execute(state.pool())
-                .await;
+            let bytes = axum::body::to_bytes(body, 8_000_000).await.unwrap_or_default();
+            // 3. 仅 2xx 持久化；失败删除占位，客户端可携带同键重试
+            if parts.status.is_success() {
+                if let Ok(value) = serde_json::from_slice::<serde_json::Value>(&bytes) {
+                    let _ = sqlx::query("UPDATE idempotency_keys SET response=$3 WHERE endpoint=$1 AND idem_key=$2")
+                        .bind(&endpoint)
+                        .bind(&key)
+                        .bind(&value)
+                        .execute(state.pool())
+                        .await;
+                }
+            } else {
+                let _ = sqlx::query("DELETE FROM idempotency_keys WHERE endpoint=$1 AND idem_key=$2")
+                    .bind(&endpoint)
+                    .bind(&key)
+                    .execute(state.pool())
+                    .await;
             }
             Response::from_parts(parts, Body::from(bytes))
         }
         _ => next.run(req).await,
     }
+}
+
+/// 令牌滑动续期（审计#3）：剩余 <6h 时自动签发新令牌放入响应头 X-Renewed-Token
+async fn token_renewal_mw(State(state): State<AppState>, req: Request, next: Next) -> Response {
+    let auth = req
+        .headers()
+        .get(axum::http::header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|h| h.strip_prefix("Bearer "))
+        .map(|s| s.to_string());
+    let res = next.run(req).await;
+    if let Some(token) = auth {
+        if let Ok(claims) = crate::auth::decode_jwt(&state.0.cfg.jwt_secret, &token) {
+            let remain = claims.exp - chrono::Utc::now().timestamp();
+            if remain > 0 && remain < 6 * 3600 {
+                if let Ok(new_tok) = crate::auth::create_jwt(&state.0.cfg.jwt_secret, &claims.sub, &claims.username, &claims.role) {
+                    let mut res = res;
+                    if let Ok(v) = axum::http::HeaderValue::from_str(&new_tok) {
+                        res.headers_mut().insert("X-Renewed-Token", v);
+                    }
+                    return res;
+                }
+            }
+        }
+    }
+    res
 }

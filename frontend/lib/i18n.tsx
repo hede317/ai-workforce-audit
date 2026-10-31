@@ -20,6 +20,7 @@ const RTL: Locale[] = ["ur", "ar"];
 type Dict = Record<string, string>;
 
 const zh: Dict = {
+  "c.retry": "重试", "nav.leads": "线索中心", "crm.title": "线索中心（CRM）", "crm.sub": "全渠道线索与跟进记录——每个线索可追溯来源内容", "crm.add": "新增线索", "crm.phName": "姓名", "crm.phEmail": "邮箱", "crm.phPhone": "电话", "crm.phCountry": "国家", "crm.phChannel": "来源渠道", "crm.phSummary": "需求摘要", "crm.status": "状态", "crm.followup": "添加跟进", "crm.phNote": "跟进内容（通话/邮件/报价…）", "crm.empty": "暂无线索", "crm.events": "跟进记录", "ag.thTools": "工具", "ag.thCat": "分类", "ag.thDesc": "说明", "ag.thPerm": "权限", "ct.assetsDesc": "DRAFT→APPROVED→发布包（发布中心回填）→PUBLISHED",
   "nav.dashboard": "总览", "nav.commander": "AI Commander", "nav.content": "内容中心", "nav.publishing": "发布中心", "nav.products": "选品中心", "nav.tasks": "任务中心", "nav.agents": "Agent 团队", "nav.approvals": "审批中心", "nav.memory": "记忆中心",
   "shell.brandSub": "HedeYou 虚拟员工平台",
   "login.title": "HedeYou AI Workforce", "login.sub": "AI 企业虚拟员工与全域经营自动化平台", "login.username": "用户名", "login.password": "密码", "login.btn": "进入指挥中心", "login.loading": "登录中…",
@@ -39,6 +40,7 @@ const zh: Dict = {
 };
 
 const en: Dict = {
+  "c.retry": "Retry", "nav.leads": "Leads", "crm.title": "Lead Center (CRM)", "crm.sub": "All-channel leads & follow-ups — every lead traceable to its source content", "crm.add": "Add Lead", "crm.phName": "Name", "crm.phEmail": "Email", "crm.phPhone": "Phone", "crm.phCountry": "Country", "crm.phChannel": "Source channel", "crm.phSummary": "Requirement summary", "crm.status": "Status", "crm.followup": "Add follow-up", "crm.phNote": "Follow-up note (call/email/quote...)", "crm.empty": "No leads", "crm.events": "Follow-ups", "ag.thTools": "Tool", "ag.thCat": "Category", "ag.thDesc": "Description", "ag.thPerm": "Permission", "ct.assetsDesc": "DRAFT→APPROVED→publish package→PUBLISHED",
   "nav.dashboard": "Dashboard", "nav.commander": "AI Commander", "nav.content": "Content", "nav.publishing": "Publishing", "nav.products": "Products", "nav.tasks": "Tasks", "nav.agents": "Agent Team", "nav.approvals": "Approvals", "nav.memory": "Memory",
   "shell.brandSub": "HedeYou Virtual Workforce",
   "login.title": "HedeYou AI Workforce", "login.sub": "AI virtual workforce & full-funnel marketing automation", "login.username": "Username", "login.password": "Password", "login.btn": "Enter Command Center", "login.loading": "Signing in…",
@@ -58,6 +60,7 @@ const en: Dict = {
 };
 
 const ur: Dict = {
+  "c.retry": "دوبارہ کوشش", "nav.leads": "لیڈز", "crm.title": "لیڈ سینٹر (CRM)", "crm.sub": "تمام چینلز کی لیڈز اور پیروی — ہر لیڈ کا سرچشمہ قابلِ رسائی", "crm.add": "نئی لیڈ", "crm.phName": "نام", "crm.phEmail": "ای میل", "crm.phPhone": "فون", "crm.phCountry": "ملک", "crm.phChannel": "ذریعہ", "crm.phSummary": "ضرورت کا خلاصہ", "crm.status": "حالت", "crm.followup": "پیروی شامل کریں", "crm.phNote": "پیروی کی تفصیل", "crm.empty": "کوئی لیڈ نہیں", "crm.events": "پیروی کا ریکارڈ", "ag.thTools": "ٹول", "ag.thCat": "قسم", "ag.thDesc": "تفصیل", "ag.thPerm": "اجازت", "ct.assetsDesc": "ڈرافٹ→منظور→پبلش پیکج→شائع",
   "nav.dashboard": "ڈیش بورڈ", "nav.commander": "AI کمانڈر", "nav.content": "مواد", "nav.publishing": "اشاعت", "nav.products": "پروڈکٹس", "nav.tasks": "ٹاسک", "nav.agents": "ایجنٹ ٹیم", "nav.approvals": "منظوری", "nav.memory": "میٹری",
   "shell.brandSub": "HedeYou ورچوئل ورک فورس",
   "login.title": "HedeYou AI Workforce", "login.sub": "AI ورچوئل ملازمین اور مارکیٹنگ آٹومیشن پلیٹ فارم", "login.username": "صارف نام", "login.password": "پاس ورڈ", "login.btn": "کمانڈ سینٹر میں داخل ہوں", "login.loading": "لاگ ان ہو رہا ہے…",
@@ -77,6 +80,7 @@ const ur: Dict = {
 };
 
 const bn: Dict = {
+  "c.retry": "পুনরায় চেষ্টা", "nav.leads": "লিড", "crm.title": "লিড সেন্টার (CRM)", "crm.sub": "সব চ্যানেলের লিড ও ফলো-আপ — প্রতিটি লিডের উৎস শনাক্তযোগ্য", "crm.add": "নতুন লিড", "crm.phName": "নাম", "crm.phEmail": "ইমেইল", "crm.phPhone": "ফোন", "crm.phCountry": "দেশ", "crm.phChannel": "উৎস চ্যানেল", "crm.phSummary": "চাহিদার সারসংক্ষেপ", "crm.status": "অবস্থা", "crm.followup": "ফলো-আপ যোগ", "crm.phNote": "ফলো-আপ বিষয়বস্তু", "crm.empty": "কোনো লিড নেই", "crm.events": "ফলো-আপ রেকর্ড", "ag.thTools": "টুল", "ag.thCat": "শ্রেণি", "ag.thDesc": "বর্ণনা", "ag.thPerm": "অনুমতি", "ct.assetsDesc": "ড্রাফট→অনুমোদিত→প্রকাশ প্যাকেজ→প্রকাশিত",
   "nav.dashboard": "ড্যাশবোর্ড", "nav.commander": "AI কমান্ডার", "nav.content": "কনটেন্ট", "nav.publishing": "প্রকাশনা", "nav.products": "প্রোডাক্ট", "nav.tasks": "টাস্ক", "nav.agents": "এজেন্ট টিম", "nav.approvals": "অনুমোদন", "nav.memory": "মেমরি",
   "shell.brandSub": "HedeYou ভার্চুয়াল ওয়ার্কফোর্স",
   "login.title": "HedeYou AI Workforce", "login.sub": "AI ভার্চুয়াল কর্মী ও মার্কেটিং অটোমেশন প্ল্যাটফর্ম", "login.username": "ব্যবহারকারী", "login.password": "পাসওয়ার্ড", "login.btn": "কমান্ড সেন্টারে প্রবেশ", "login.loading": "লগইন হচ্ছে…",
@@ -96,6 +100,7 @@ const bn: Dict = {
 };
 
 const ar: Dict = {
+  "c.retry": "إعادة المحاولة", "nav.leads": "العملاء المحتملون", "crm.title": "مركز العملاء (CRM)", "crm.sub": "عملاء من كل القنوات وسجل المتابعة — كل عميل قابل للتتبع حتى مصدره", "crm.add": "عميل جديد", "crm.phName": "الاسم", "crm.phEmail": "البريد الإلكتروني", "crm.phPhone": "الهاتف", "crm.phCountry": "الدولة", "crm.phChannel": "قناة المصدر", "crm.phSummary": "ملخص الاحتياج", "crm.status": "الحالة", "crm.followup": "إضافة متابعة", "crm.phNote": "محتوى المتابعة", "crm.empty": "لا عملاء", "crm.events": "سجل المتابعة", "ag.thTools": "الأداة", "ag.thCat": "الفئة", "ag.thDesc": "الوصف", "ag.thPerm": "الصلاحية", "ct.assetsDesc": "مسودة→معتمد→حزمة نشر→منشور",
   "nav.dashboard": "لوحة التحكم", "nav.commander": "AI القائد", "nav.content": "المحتوى", "nav.publishing": "النشر", "nav.products": "المنتجات", "nav.tasks": "المهام", "nav.agents": "فريق الوكلاء", "nav.approvals": "الموافقات", "nav.memory": "الذاكرة",
   "shell.brandSub": "منصة HedeYou للقوى العاملة الافتراضية",
   "login.title": "HedeYou AI Workforce", "login.sub": "منصة العمال الافتراضيين بالذكاء الاصطناعي وأتمتة التسويق", "login.username": "اسم المستخدم", "login.password": "كلمة المرور", "login.btn": "دخول مركز القيادة", "login.loading": "جارٍ الدخول…",
@@ -115,6 +120,7 @@ const ar: Dict = {
 };
 
 const fr: Dict = {
+  "c.retry": "Réessayer", "nav.leads": "Prospects", "crm.title": "Centre de prospects (CRM)", "crm.sub": "Prospects multicanaux & relances — chaque prospect traçable jusqu'au contenu source", "crm.add": "Nouveau prospect", "crm.phName": "Nom", "crm.phEmail": "E-mail", "crm.phPhone": "Téléphone", "crm.phCountry": "Pays", "crm.phChannel": "Canal source", "crm.phSummary": "Résumé du besoin", "crm.status": "Statut", "crm.followup": "Ajouter une relance", "crm.phNote": "Note de relance (appel/e-mail/devis...)", "crm.empty": "Aucun prospect", "crm.events": "Relances", "ag.thTools": "Outil", "ag.thCat": "Catégorie", "ag.thDesc": "Description", "ag.thPerm": "Permission", "ct.assetsDesc": "Brouillon→Approuvé→paquet publication→Publié",
   "nav.dashboard": "Tableau de bord", "nav.commander": "AI Commander", "nav.content": "Contenu", "nav.publishing": "Publication", "nav.products": "Produits", "nav.tasks": "Tâches", "nav.agents": "Équipe d'agents", "nav.approvals": "Approbations", "nav.memory": "Mémoire",
   "shell.brandSub": "Main-d'œuvre virtuelle HedeYou",
   "login.title": "HedeYou AI Workforce", "login.sub": "Plateforme d'employés virtuels IA et d'automatisation marketing", "login.username": "Identifiant", "login.password": "Mot de passe", "login.btn": "Entrer au centre de commandement", "login.loading": "Connexion…",
@@ -134,6 +140,7 @@ const fr: Dict = {
 };
 
 const pt: Dict = {
+  "c.retry": "Repetir", "nav.leads": "Leads", "crm.title": "Central de Leads (CRM)", "crm.sub": "Leads multicanal & follow-ups — cada lead rastreável até o conteúdo de origem", "crm.add": "Novo Lead", "crm.phName": "Nome", "crm.phEmail": "E-mail", "crm.phPhone": "Telefone", "crm.phCountry": "País", "crm.phChannel": "Canal de origem", "crm.phSummary": "Resumo da necessidade", "crm.status": "Status", "crm.followup": "Adicionar follow-up", "crm.phNote": "Nota de follow-up (ligação/e-mail/cotacao...)", "crm.empty": "Nenhum lead", "crm.events": "Follow-ups", "ag.thTools": "Ferramenta", "ag.thCat": "Categoria", "ag.thDesc": "Descricao", "ag.thPerm": "Permissao", "ct.assetsDesc": "Rascunho→Aprovado→pacote de publicação→Publicado",
   "nav.dashboard": "Painel", "nav.commander": "AI Commander", "nav.content": "Conteúdo", "nav.publishing": "Publicação", "nav.products": "Produtos", "nav.tasks": "Tarefas", "nav.agents": "Equipe de Agentes", "nav.approvals": "Aprovações", "nav.memory": "Memória",
   "shell.brandSub": "Força de trabalho virtual HedeYou",
   "login.title": "HedeYou AI Workforce", "login.sub": "Plataforma de funcionários virtuais com IA e automação de marketing", "login.username": "Usuário", "login.password": "Senha", "login.btn": "Entrar no Centro de Comando", "login.loading": "Entrando…",
@@ -153,6 +160,7 @@ const pt: Dict = {
 };
 
 const es: Dict = {
+  "c.retry": "Reintentar", "nav.leads": "Prospectos", "crm.title": "Centro de Prospectos (CRM)", "crm.sub": "Prospectos multicanal y seguimientos — cada prospecto rastreable hasta su contenido de origen", "crm.add": "Nuevo Prospecto", "crm.phName": "Nombre", "crm.phEmail": "Correo", "crm.phPhone": "Teléfono", "crm.phCountry": "País", "crm.phChannel": "Canal de origen", "crm.phSummary": "Resumen de la necesidad", "crm.status": "Estado", "crm.followup": "Añadir seguimiento", "crm.phNote": "Nota de seguimiento (llamada/correo/cotizacion...)", "crm.empty": "Sin prospectos", "crm.events": "Seguimientos", "ag.thTools": "Herramienta", "ag.thCat": "Categoría", "ag.thDesc": "Descripción", "ag.thPerm": "Permiso", "ct.assetsDesc": "Borrador→Aprobado→paquete de publicación→Publicado",
   "nav.dashboard": "Panel", "nav.commander": "AI Commander", "nav.content": "Contenido", "nav.publishing": "Publicación", "nav.products": "Productos", "nav.tasks": "Tareas", "nav.agents": "Equipo de Agentes", "nav.approvals": "Aprobaciones", "nav.memory": "Memoria",
   "shell.brandSub": "Fuerza laboral virtual HedeYou",
   "login.title": "HedeYou AI Workforce", "login.sub": "Plataforma de empleados virtuales con IA y automatización de marketing", "login.username": "Usuario", "login.password": "Contraseña", "login.btn": "Entrar al Centro de Mando", "login.loading": "Iniciando sesión…",

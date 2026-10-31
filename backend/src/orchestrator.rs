@@ -130,7 +130,21 @@ async fn ai_plan(
             if !agents.iter().any(|a| a.code == agent_code) {
                 continue; // 无效Agent直接丢弃，防幻觉
             }
-            let tool = it.get("tool").and_then(|v| v.as_str()).filter(|t| is_valid_tool(t)).map(|s| s.to_string());
+            let tool = it
+                .get("tool")
+                .and_then(|v| v.as_str())
+                .filter(|t| is_valid_tool(t))
+                .filter(|t| {
+                    // 审计#1：工具必须在指派 Agent 的白名单内
+                    agents
+                        .iter()
+                        .find(|a| a.code == agent_code)
+                        .and_then(|a| a.tools.as_ref())
+                        .and_then(|v| v.as_array())
+                        .map(|arr| arr.iter().any(|x| x.as_str() == Some(*t)))
+                        .unwrap_or(false)
+                })
+                .map(|s| s.to_string());
             out.push(PlannedSubtask {
                 title: it.get("title").and_then(|v| v.as_str()).unwrap_or("未命名任务").to_string(),
                 agent_code,
@@ -220,7 +234,7 @@ pub async fn create_goal(state: &AppState, goal: &str, bu_code: Option<String>, 
         .execute(state.pool())
         .await?;
         add_event(state, &id, "Created", json!({"agent": sub.agent_code, "tool": sub.tool_hint})).await;
-        child_ids.push(json!({"id": id, "title": sub.title, "agent_code": sub.agent_code, "requires_approval": sub.requires_approval}));
+        child_ids.push(json!({"id": id, "title": sub.title, "agent_code": sub.agent_code, "tool_hint": sub.tool_hint, "requires_approval": sub.requires_approval}));
     }
     set_task_status(state, &root_id, "Assigned").await;
     add_event(state, &root_id, "Planned", json!({"mode": plan_mode, "children": child_ids.len()})).await;
@@ -279,6 +293,25 @@ pub async fn execute_task(state: &AppState, task_id: &str, approved: bool) -> Re
         .ok_or_else(|| AppError::not_found("任务不存在"))?;
     if TERMINAL.contains(&task.status.as_str()) || task.status == "Running" {
         return Ok(());
+    }
+    // 审计#1/#2：预算护栏前置拦截（不再只记账）+ Agent 工具白名单
+    if task.tool_calls_used >= task.max_tool_calls {
+        return finish_failed(state, &task, AppError::forbidden("BUDGET_EXCEEDED: 工具调用次数已达上限")).await;
+    }
+    if task.tokens_used >= task.max_tokens {
+        return finish_failed(state, &task, AppError::forbidden("BUDGET_EXCEEDED: Token 消耗已达预算上限")).await;
+    }
+    if let (Some(tool), Some(agent_code)) = (task.tool_hint.as_deref(), task.agent_code.as_deref()) {
+        let allowed: Option<(Option<serde_json::Value>,)> =
+            sqlx::query_as("SELECT tools FROM agents WHERE code=$1").bind(agent_code).fetch_optional(state.pool()).await?;
+        let in_whitelist = allowed
+            .and_then(|(t,)| t)
+            .and_then(|v| v.as_array().cloned())
+            .map(|arr| arr.iter().any(|x| x.as_str() == Some(tool)))
+            .unwrap_or(false);
+        if !in_whitelist {
+            return finish_failed(state, &task, AppError::forbidden(format!("Agent {agent_code} 无权调用工具 {tool}（超出白名单）"))).await;
+        }
     }
     sqlx::query("UPDATE tasks SET status='Running', started_at=now() WHERE id=$1")
         .bind(task_id)
@@ -423,17 +456,8 @@ pub async fn execute_goal(state: &AppState, root_id: &str) -> Result<Value, AppE
             _ => {}
         }
     }
-    let all_done = waiting == 0;
-    let root_status = if all_done { "Completed" } else { "Running" };
-    let summary = json!({"completed": completed, "failed": failed, "waiting_approval": waiting});
-    sqlx::query("UPDATE tasks SET status=$2, finished_at=CASE WHEN $2='Completed' THEN now() ELSE finished_at END, result=$3 WHERE id=$1")
-        .bind(root_id)
-        .bind(root_status)
-        .bind(&summary)
-        .execute(state.pool())
-        .await?;
-    add_event(state, root_id, "GoalSummary", summary.clone()).await;
-    Ok(summary)
+    let _ = (completed, failed);
+    sync_root_status(state, root_id).await
 }
 
 /// 审批决定：批准→带授权执行；拒绝→任务取消
@@ -466,5 +490,64 @@ pub async fn decide_approval(state: &AppState, approval_id: &str, decision: &str
         }
     }
     let task: Task = sqlx::query_as("SELECT * FROM tasks WHERE id=$1").bind(&task_id).fetch_one(state.pool()).await?;
-    Ok(json!({"task_id": task.id, "status": task.status, "result": task.result}))
+    let root_summary = match &task.root_id {
+        Some(root) => Some(sync_root_status(state, root).await?),
+        None => None,
+    };
+    Ok(json!({"task_id": task.id, "status": task.status, "result": task.result, "root": root_summary}))
+}
+
+/// 统一失败落账（供预算/白名单前置拦截复用）
+async fn finish_failed(state: &AppState, task: &Task, e: AppError) -> Result<(), AppError> {
+    sqlx::query("UPDATE tasks SET status='Failed', finished_at=now(), error=$2 WHERE id=$1")
+        .bind(&task.id)
+        .bind(format!("[{}] {}", e.code, e.message))
+        .execute(state.pool())
+        .await?;
+    add_event(state, &task.id, "Failed", json!({"error": e.message})).await;
+    Ok(())
+}
+
+/// 审计#6：统一汇总根任务状态（execute_goal / decide_approval / retry / cancel 后都必须调用）
+pub async fn sync_root_status(state: &AppState, root_id: &str) -> Result<Value, AppError> {
+    let children: Vec<Task> = sqlx::query_as("SELECT * FROM tasks WHERE root_id=$1 AND depth=1 ORDER BY created_at")
+        .bind(root_id)
+        .fetch_all(state.pool())
+        .await?;
+    if children.is_empty() {
+        return Ok(json!({}));
+    }
+    let mut completed = 0i64;
+    let mut failed = 0i64;
+    let mut waiting = 0i64;
+    let mut active = 0i64;
+    for c in &children {
+        match c.status.as_str() {
+            "Completed" => completed += 1,
+            "Failed" | "Cancelled" | "Rejected" => failed += 1,
+            "Waiting Approval" => waiting += 1,
+            _ => active += 1,
+        }
+    }
+    // 不再说谎：全败=Failed，有等待=Waiting Approval，有活跃=Running，其余=Completed
+    let root_status = if active > 0 {
+        "Running"
+    } else if waiting > 0 {
+        "Waiting Approval"
+    } else if completed == 0 && failed > 0 {
+        "Failed"
+    } else {
+        "Completed"
+    };
+    let is_terminal = matches!(root_status, "Completed" | "Failed");
+    let summary = json!({"completed": completed, "failed": failed, "waiting_approval": waiting});
+    sqlx::query("UPDATE tasks SET status=$2, finished_at=CASE WHEN $3 THEN now() ELSE finished_at END, result=$4 WHERE id=$1")
+        .bind(root_id)
+        .bind(root_status)
+        .bind(is_terminal)
+        .bind(&summary)
+        .execute(state.pool())
+        .await?;
+    add_event(state, root_id, "GoalSummary", summary.clone()).await;
+    Ok(summary)
 }

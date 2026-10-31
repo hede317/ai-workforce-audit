@@ -60,6 +60,15 @@ impl<'a> AiProvider<'a> {
 
 /// 从模型输出中提取 JSON（容忍 ```json 包裹）
 pub fn extract_json(text: &str) -> Option<Value> {
+    // 审计#14：优先 ```json 围栏，避免外层散文大括号污染
+    if let Some(pos) = text.find("```json") {
+        let rest = &text[pos + 7..];
+        if let Some(end) = rest.find("```") {
+            if let Ok(v) = serde_json::from_str(rest[..end].trim()) {
+                return Some(v);
+            }
+        }
+    }
     let trimmed = text.trim();
     let candidate = if let Some(start) = trimmed.find('{') {
         let end = trimmed.rfind('}')?;

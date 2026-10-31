@@ -62,7 +62,7 @@ export default function TasksPage() {
           <option value="">{tr("tasks.allStatus")}</option>
           {["Created", "Running", "Waiting Approval", "Completed", "Failed", "Cancelled", "Rejected"].map((s) => (
             <option key={s} value={s}>
-              {s}
+              {tr(s)}
             </option>
           ))}
         </select>

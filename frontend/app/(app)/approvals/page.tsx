@@ -12,6 +12,8 @@ export default function ApprovalsPage() {
   const [status, setStatus] = useState("PENDING");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [deciding, setDeciding] = useState<string | null>(null);
+  const [note, setNote] = useState("");
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -30,9 +32,12 @@ export default function ApprovalsPage() {
     load();
   }, [load]);
 
+  // 审计#25：批准/拒绝必须可填批注，不再硬编码
   async function decide(id: string, decision: "APPROVED" | "REJECTED") {
     try {
-      await post(`/api/v1/approvals/${id}/decide`, { decision, note: decision === "APPROVED" ? "已批准" : "已拒绝" });
+      await post(`/api/v1/approvals/${id}/decide`, { decision, note: note || (decision === "APPROVED" ? "已批准" : "已拒绝") });
+      setDeciding(null);
+      setNote("");
       load();
     } catch (e: any) {
       setError(e.message);
@@ -74,14 +79,26 @@ export default function ApprovalsPage() {
                     {a.decided_by ? ` · ${t("ap.decidedBy")} ${a.decided_by}` : ""}
                   </div>
                 </div>
+                {deciding === a.id && a.status === "PENDING" ? (
+                  <input
+                    className="basis-full rounded-md border bg-background px-3 py-1.5 text-xs outline-none focus:ring-[3px] focus:ring-ring"
+                    placeholder="批注：批准理由 / 拒绝原因（将记入审计）"
+                    value={note}
+                    onChange={(e) => setNote(e.target.value)}
+                    autoFocus
+                  />
+                ) : null}
                 <div className="flex shrink-0 items-center gap-1.5">
                   <Badge tone={a.status === "PENDING" ? "yellow" : a.status === "APPROVED" ? "green" : "red"}>{a.status}</Badge>
                   {a.status === "PENDING" ? (
                     <>
-                      <Button size="sm" variant="success" onClick={() => decide(a.id, "APPROVED")}>
+                      <Button size="sm" variant="ghost" onClick={() => setDeciding(deciding === a.id ? null : a.id)}>
+                        ✎
+                      </Button>
+                      <Button size="sm" variant="success" onClick={() => (note || deciding === a.id ? decide(a.id, "APPROVED") : setDeciding(a.id))}>
                         <Check size={12} /> {t("c.approve")}
                       </Button>
-                      <Button size="sm" variant="destructive" onClick={() => decide(a.id, "REJECTED")}>
+                      <Button size="sm" variant="destructive" onClick={() => (deciding === a.id ? decide(a.id, "REJECTED") : setDeciding(a.id))}>
                         <X size={12} /> {t("c.reject")}
                       </Button>
                     </>

@@ -5,7 +5,6 @@ use crate::state::AppState;
 use axum::response::Response;
 use chrono::Local;
 use serde_json::{json, Value};
-use std::process::Command;
 use crate::ai::{cosine, parse_pgvector, vector_to_pgtext, EmbedClient};
 use lettre::message::header::ContentType;
 use lettre::message::Mailbox;
@@ -69,13 +68,13 @@ pub async fn dispatch(code: &str, args: Value, ctx: &ToolCtx<'_>) -> Result<Valu
             let prompt = args.get("prompt").and_then(|v| v.as_str()).ok_or_else(|| AppError::bad_request("缺少 prompt"))?;
             let system = args.get("system").and_then(|v| v.as_str()).unwrap_or("你是高效的企业营销与经营助手。");
             let reply = call_ai(state, system, prompt, 2000).await?;
-            Ok(json!({"output": reply.text, "mode": "ai"}))
+            Ok(json!({"output": reply.text, "tokens": reply.tokens, "mode": "ai"}))
         }
         "ai.translate" => {
             let text = args.get("text").and_then(|v| v.as_str()).ok_or_else(|| AppError::bad_request("缺少 text"))?;
             let lang = args.get("target_language").and_then(|v| v.as_str()).unwrap_or("en");
             let reply = call_ai(state, "你是专业翻译，只输出译文。", &format!("翻译为{lang}：\n{text}"), 2000).await?;
-            Ok(json!({"output": reply.text, "mode": "ai"}))
+            Ok(json!({"output": reply.text, "tokens": reply.tokens, "mode": "ai"}))
         }
         "content.topics_template" => offline_topics(state, &args).await,
         "content.draft_article" => draft_article(state, ctx, &args).await,
@@ -106,6 +105,75 @@ async fn call_ai(state: &AppState, system: &str, user: &str, max_tokens: u64) ->
         http: &state.0.http,
     };
     provider.chat(&[ChatMessage { role: "system".into(), content: system.into() }, ChatMessage { role: "user".into(), content: user.into() }], max_tokens).await
+}
+
+/// 审计#10：受限地址判定（std 的 is_private/is_link_local 尚未稳定，手动实现）
+fn is_restricted_ip(ip: &std::net::IpAddr) -> bool {
+    match ip {
+        std::net::IpAddr::V4(v4) => {
+            v4.is_loopback() || v4.is_private() || v4.is_link_local() || v4.is_unspecified() || v4.is_broadcast() || v4.is_multicast() || v4.is_documentation()
+        }
+        std::net::IpAddr::V6(v6) => {
+            v6.is_loopback()
+                || v6.is_unspecified()
+                || v6.is_multicast()
+                || (v6.segments()[0] & 0xfe00) == 0xfc00 // fc00::/7 唯一本地
+                || (v6.segments()[0] & 0xffc0) == 0xfe80 // fe80::/10 链路本地
+        }
+    }
+}
+
+/// 审计#10：外链 SSRF 防护——仅 http/https，解析后拒绝环回/内网/链路本地地址
+async fn validate_external_url(state: &AppState, raw: &str) -> Result<String, AppError> {
+    let parsed = reqwest::Url::parse(raw).map_err(|_| AppError::bad_request("URL 无法解析"))?;
+    if parsed.scheme() != "http" && parsed.scheme() != "https" {
+        return Err(AppError::bad_request("仅允许 http/https 协议"));
+    }
+    let host = parsed.host_str().ok_or_else(|| AppError::bad_request("URL 缺少主机名"))?.to_string();
+    let port = parsed.port_or_known_default().unwrap_or(80);
+    let addrs: Vec<std::net::IpAddr> = if let Ok(ip) = host.parse() {
+        vec![ip]
+    } else {
+        tokio::net::lookup_host((host.as_str(), port))
+            .await
+            .map_err(|_| AppError::bad_request(format!("域名解析失败: {host}")))?
+            .map(|s| s.ip())
+            .collect()
+    };
+    for ip in &addrs {
+        if is_restricted_ip(ip) {
+            return Err(AppError::forbidden(format!("SSRF 防护：拒绝访问内网/保留地址 {ip}")));
+        }
+    }
+    Ok(raw.to_string())
+}
+
+/// 审计#10：限量抓取（重定向禁用 + 512KB 上限），防 OOM
+async fn fetch_limited(state: &AppState, url: &str, max: usize) -> Result<(u16, String), AppError> {
+    let safe_url = validate_external_url(state, url).await?;
+    let resp = state
+        .0
+        .http_no_redirect
+        .get(&safe_url)
+        .send()
+        .await
+        .map_err(|e| AppError::internal(format!("网页抓取失败: {e}")))?;
+    let status = resp.status().as_u16();
+    if let Some(len) = resp.content_length() {
+        if len as usize > max {
+            return Err(AppError::bad_request(format!("响应体 {len} 字节超过 {max} 上限")));
+        }
+    }
+    let mut body: Vec<u8> = Vec::new();
+    let mut resp = resp;
+    while let Some(chunk) = resp.chunk().await.map_err(|e| AppError::internal(format!("读取响应失败: {e}")))? {
+        body.extend_from_slice(&chunk);
+        if body.len() >= max {
+            body.truncate(max);
+            break;
+        }
+    }
+    Ok((status, String::from_utf8_lossy(&body).to_string()))
 }
 
 fn take_str(args: &Value, key: &str) -> Option<String> {
@@ -185,10 +253,7 @@ fn strip_html(html: &str) -> String {
 
 async fn web_fetch(state: &AppState, args: &Value) -> Result<Value, AppError> {
     let url = take_str(args, "url").ok_or_else(|| AppError::bad_request("缺少 url"))?;
-    let resp = state.0.http.get(&url).send().await
-        .map_err(|e| AppError::internal(format!("网页抓取失败: {e}")))?;
-    let status = resp.status().as_u16();
-    let html = resp.text().await.unwrap_or_default();
+    let (status, html) = fetch_limited(state, &url, 512 * 1024).await?;
     let title = scraper::Html::parse_document(&html)
         .select(&scraper::Selector::parse("title").unwrap())
         .next()
@@ -199,9 +264,7 @@ async fn web_fetch(state: &AppState, args: &Value) -> Result<Value, AppError> {
 
 async fn seo_check(state: &AppState, args: &Value) -> Result<Value, AppError> {
     let html = if let Some(url) = take_str(args, "url") {
-        let resp = state.0.http.get(&url).send().await
-            .map_err(|e| AppError::internal(format!("页面抓取失败: {e}")))?;
-        resp.text().await.unwrap_or_default()
+        fetch_limited(state, &url, 512 * 1024).await?.1
     } else {
         take_str(args, "html").ok_or_else(|| AppError::bad_request("需要 url 或 html"))?
     };
@@ -228,7 +291,7 @@ async fn seo_check(state: &AppState, args: &Value) -> Result<Value, AppError> {
     };
     if let Some(url) = url_for_sitemap {
         let base = url.trim_end_matches('/');
-        let sm = state.0.http.get(format!("{base}/sitemap.xml")).send().await;
+        let sm = state.0.http_no_redirect.get(format!("{base}/sitemap.xml")).send().await;
         checks.push(json!({"item": "Sitemap可访问", "ok": sm.map(|r| r.status().is_success()).unwrap_or(false)}));
     }
     let total = checks.len();
@@ -238,7 +301,7 @@ async fn seo_check(state: &AppState, args: &Value) -> Result<Value, AppError> {
 
 async fn video_placeholder(state: &AppState, args: &Value) -> Result<Value, AppError> {
     let title = take_str(args, "title").unwrap_or_else(|| "AI Workforce".into());
-    let ffmpeg_ok = Command::new("ffmpeg").arg("-version").output().map(|o| o.status.success()).unwrap_or(false);
+    let ffmpeg_ok = tokio::process::Command::new("ffmpeg").arg("-version").output().await.map(|o| o.status.success()).unwrap_or(false);
     if !ffmpeg_ok {
         return Err(AppError::not_configured("ffmpeg（本机未安装或不在PATH）"));
     }
@@ -246,10 +309,11 @@ async fn video_placeholder(state: &AppState, args: &Value) -> Result<Value, AppE
     let dir = std::path::Path::new(&state.0.cfg.media_dir);
     std::fs::create_dir_all(dir).map_err(|e| AppError::internal(format!("创建媒体目录失败: {e}")))?;
     let path = dir.join(&name);
-    let out = Command::new("ffmpeg")
+    let out = tokio::process::Command::new("ffmpeg")
         .args(["-y", "-f", "lavfi", "-i", "testsrc=duration=5:size=1280x720:rate=25", "-pix_fmt", "yuv420p"])
         .arg(&path)
         .output()
+        .await
         .map_err(|e| AppError::internal(format!("ffmpeg执行失败: {e}")))?;
     if !out.status.success() {
         return Err(AppError::internal(format!("ffmpeg渲染失败: {}", String::from_utf8_lossy(&out.stderr))));
@@ -322,22 +386,7 @@ async fn memory_save(state: &AppState, args: &Value) -> Result<Value, AppError> 
         .bind(take_str(args, "source_task_id").unwrap_or_default())
         .bind(status)
         .execute(state.pool()).await?;
-    // 向量记忆：配置了 embedding 服务则同步生成向量（失败不阻塞保存，回落 LIKE 检索）
-    if state.0.cfg.embed_available() {
-        let client = EmbedClient {
-            base_url: &state.0.cfg.embed_api_base,
-            api_key: &state.0.cfg.embed_api_key,
-            model: &state.0.cfg.embed_model,
-            http: &state.0.http,
-        };
-        if let Ok(vec) = client.embed(&format!("{title}\n{content}")).await {
-            let _ = sqlx::query("UPDATE memories SET embedding=$2::text::vector WHERE id=$1")
-                .bind(&id)
-                .bind(vector_to_pgtext(&vec))
-                .execute(state.pool())
-                .await;
-        }
-    }
+    embed_memory(state, &id, &title, &content).await;
     Ok(json!({"output": format!("记忆已保存（{kind}/{status}）"), "memory_id": id}))
 }
 
@@ -354,26 +403,19 @@ async fn memory_search(state: &AppState, args: &Value) -> Result<Value, AppError
             http: &state.0.http,
         };
         if let Ok(qvec) = client.embed(&q).await {
-            let rows: Vec<(String, String, String, String, Option<String>)> = if let Some(k) = &kind {
-                sqlx::query_as("SELECT id, kind, title, left(content,300), embedding::text FROM memories WHERE status='ACTIVE' AND kind=$1 AND embedding IS NOT NULL ORDER BY created_at DESC LIMIT 500")
-                    .bind(k).fetch_all(state.pool()).await?
-            } else {
-                sqlx::query_as("SELECT id, kind, title, left(content,300), embedding::text FROM memories WHERE status='ACTIVE' AND embedding IS NOT NULL ORDER BY created_at DESC LIMIT 500")
-                    .fetch_all(state.pool()).await?
-            };
-            let mut scored: Vec<(f32, String, String, String, String)> = rows
+            // 审计#15：pgvector 库内 <=> 余弦排序，全量历史可检索、不拉向量回应用层
+            let pg_vec = vector_to_pgtext(&qvec);
+            let rows: Vec<(String, String, String, String, f64)> = sqlx::query_as(
+                "SELECT id, kind, title, left(content,300), (1.0 - (embedding <=> $1::text::vector)) AS score FROM memories WHERE status='ACTIVE' AND embedding IS NOT NULL AND ($2::text IS NULL OR kind=$2) AND (1.0 - (embedding <=> $1::text::vector)) > 0.25 ORDER BY embedding <=> $1::text::vector LIMIT $3",
+            )
+            .bind(&pg_vec)
+            .bind(kind.as_deref())
+            .bind(limit)
+            .fetch_all(state.pool())
+            .await?;
+            let items: Vec<Value> = rows
                 .into_iter()
-                .filter_map(|(id, k, title, excerpt, emb)| {
-                    let v = parse_pgvector(&emb?);
-                    Some((cosine(&qvec, &v), id, k, title, excerpt))
-                })
-                .filter(|(s, _, _, _, _)| *s > 0.25)
-                .collect();
-            scored.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
-            let items: Vec<Value> = scored
-                .into_iter()
-                .take(limit as usize)
-                .map(|(score, id, k, title, excerpt)| json!({"id": id, "kind": k, "title": title, "excerpt": excerpt, "score": score}))
+                .map(|(id, k, title, excerpt, score)| json!({"id": id, "kind": k, "title": title, "excerpt": excerpt, "score": score}))
                 .collect();
             if !items.is_empty() {
                 return Ok(json!({"output": format!("向量检索到{}条相关记忆", items.len()), "memories": items, "mode": "vector_search"}));
@@ -393,9 +435,10 @@ async fn memory_search(state: &AppState, args: &Value) -> Result<Value, AppError
 }
 
 async fn crm_create_lead(state: &AppState, args: &Value) -> Result<Value, AppError> {
-    let email = take_str(args, "email");
+    // 审计#8：trim+小写规范化，空串归 None，避免空串重复崩溃
+    let email = take_str(args, "email").map(|e| e.trim().to_lowercase()).filter(|e| !e.is_empty());
     if let Some(e) = &email {
-        let dup: Option<(String,)> = sqlx::query_as("SELECT id FROM leads WHERE email = $1").bind(e).fetch_optional(state.pool()).await?;
+        let dup: Option<(String,)> = sqlx::query_as("SELECT id FROM leads WHERE lower(btrim(email)) = $1").bind(e).fetch_optional(state.pool()).await?;
         if dup.is_some() {
             return Err(AppError::conflict(format!("该邮箱线索已存在，拒绝重复创建: {e}")));
         }
@@ -405,7 +448,7 @@ async fn crm_create_lead(state: &AppState, args: &Value) -> Result<Value, AppErr
         .bind(&id)
         .bind(take_str(args, "business_unit_code").unwrap_or_default())
         .bind(take_str(args, "name").unwrap_or_default())
-        .bind(email.clone().unwrap_or_default())
+        .bind(email.clone())
         .bind(take_str(args, "phone").unwrap_or_default())
         .bind(take_str(args, "country").unwrap_or_default())
         .bind(take_str(args, "source_channel").unwrap_or_else(|| "agent".into()))
@@ -455,17 +498,24 @@ async fn email_send(state: &AppState, args: &Value) -> Result<Value, AppError> {
         .header(ContentType::TEXT_PLAIN)
         .body(body)
         .map_err(|e| AppError::internal(format!("邮件构造失败: {e}")))?;
-    let tls_params = TlsParameters::new(cfg.smtp_host.clone()).map_err(|e| AppError::internal(format!("TLS初始化失败: {e}")))?;
-    let tls = match cfg.smtp_security.as_str() {
-        "none" => Tls::None,
-        "starttls" => Tls::Required(tls_params),
-        _ => Tls::Wrapper(tls_params), // 默认 ssl（465 隐式TLS）
+    // 审计#11：默认走证书校验的 relay/starttls_relay；仅显式 security=none 才用 builder_dangerous
+    let creds = Credentials::new(cfg.smtp_user.clone(), cfg.smtp_pass.clone());
+    let mailer = match cfg.smtp_security.as_str() {
+        "none" => AsyncSmtpTransport::<Tokio1Executor>::builder_dangerous(&cfg.smtp_host)
+            .port(cfg.smtp_port)
+            .credentials(creds)
+            .build(),
+        "starttls" => AsyncSmtpTransport::<Tokio1Executor>::starttls_relay(&cfg.smtp_host)
+            .map_err(|e| AppError::internal(format!("TLS初始化失败: {e}")))?
+            .port(cfg.smtp_port)
+            .credentials(creds)
+            .build(),
+        _ => AsyncSmtpTransport::<Tokio1Executor>::relay(&cfg.smtp_host)
+            .map_err(|e| AppError::internal(format!("TLS初始化失败: {e}")))?
+            .port(cfg.smtp_port)
+            .credentials(creds)
+            .build(),
     };
-    let mailer = AsyncSmtpTransport::<Tokio1Executor>::builder_dangerous(&cfg.smtp_host)
-        .port(cfg.smtp_port)
-        .tls(tls)
-        .credentials(Credentials::new(cfg.smtp_user.clone(), cfg.smtp_pass.clone()))
-        .build();
     mailer.send(email).await.map_err(|e| AppError::internal(format!("邮件发送失败: {e}")))?;
     Ok(json!({"output": format!("邮件已发送至 {to}"), "mode": "smtp"}))
 }
@@ -494,4 +544,24 @@ async fn score_product(state: &AppState, args: &Value) -> Result<Value, AppError
         .execute(state.pool())
         .await?;
     Ok(json!({"output": format!("选品评分已回写：{title}"), "analysis": parsed, "tokens": reply.tokens, "mode": "ai"}))
+}
+
+/// 审计#9-2：为指定记忆生成并写回 embedding（手动新增/修改记忆同样可被语义检索）
+pub async fn embed_memory(state: &AppState, memory_id: &str, title: &str, content: &str) {
+    if !state.0.cfg.embed_available() {
+        return;
+    }
+    let client = EmbedClient {
+        base_url: &state.0.cfg.embed_api_base,
+        api_key: &state.0.cfg.embed_api_key,
+        model: &state.0.cfg.embed_model,
+        http: &state.0.http,
+    };
+    if let Ok(vec) = client.embed(&format!("{title}\n{content}")).await {
+        let _ = sqlx::query("UPDATE memories SET embedding=$2::text::vector WHERE id=$1")
+            .bind(memory_id)
+            .bind(vector_to_pgtext(&vec))
+            .execute(state.pool())
+            .await;
+    }
 }

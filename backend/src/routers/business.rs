@@ -9,22 +9,19 @@ use std::collections::HashMap;
 // ---------- 选题 ----------
 
 pub async fn list_topics(State(state): State<AppState>, _user: AuthUser, Query(q): Query<HashMap<String, String>>) -> ApiResult {
+    // 审计#17：过滤条件下推 SQL，避免假空
     let rows: Vec<(String, Option<String>, String, Option<Value>, Option<String>, String, i32, String)> =
-        sqlx::query_as("SELECT id, business_unit_code, title, keywords, audience, language, priority, status FROM content_topics ORDER BY created_at DESC LIMIT 200")
+        sqlx::query_as("SELECT id, business_unit_code, title, keywords, audience, language, priority, status FROM content_topics WHERE ($1::text IS NULL OR business_unit_code=$1) AND ($2::text IS NULL OR status=$2) ORDER BY created_at DESC LIMIT 200")
+            .bind(q.get("business_unit_code"))
+            .bind(q.get("status"))
             .fetch_all(state.pool())
             .await?;
-    let mut items: Vec<Value> = rows
+    let items: Vec<Value> = rows
         .into_iter()
         .map(|(id, bu, title, kw, audience, lang, priority, status)| {
             json!({"id": id, "business_unit_code": bu, "title": title, "keywords": kw, "audience": audience, "language": lang, "priority": priority, "status": status})
         })
         .collect();
-    if let Some(want_bu) = q.get("business_unit_code") {
-        items.retain(|i| i["business_unit_code"].as_str() == Some(want_bu.as_str()));
-    }
-    if let Some(want_status) = q.get("status") {
-        items.retain(|i| i["status"].as_str() == Some(want_status.as_str()));
-    }
     ok(json!({"items": items, "total": items.len()}))
 }
 
@@ -80,7 +77,7 @@ pub async fn create_content(State(state): State<AppState>, user: AuthUser, Json(
     ok(json!({"id": id, "status": "DRAFT"}))
 }
 
-pub async fn approve_content(State(state): State<AppState>, user: AuthUser, Path(id): Path<String>) -> ApiResult {
+pub async fn approve_content(State(state): State<AppState>, user: crate::auth::EditorUser, Path(id): Path<String>) -> ApiResult {
     let res = sqlx::query("UPDATE content_assets SET status='APPROVED' WHERE id=$1 AND status IN ('DRAFT','IN_REVIEW')")
         .bind(&id)
         .execute(state.pool())
@@ -109,6 +106,15 @@ pub async fn publish_content(
         return Err(AppError::conflict("内容未审批，禁止发布（红线：所有公开内容必须人工审批）"));
     }
     let platform = body.get("platform").and_then(|v| v.as_str()).unwrap_or("website");
+    // 审计红线2补强：同一内容存在进行中的发布任务时禁止重复生成
+    let dup: Option<(String,)> =
+        sqlx::query_as("SELECT id FROM publishing_tasks WHERE content_asset_id=$1 AND status IN ('HUMAN_QUEUE','DRAFT','SCHEDULED','PUBLISHING') LIMIT 1")
+            .bind(&id)
+            .fetch_optional(state.pool())
+            .await?;
+    if dup.is_some() {
+        return Err(AppError::conflict("该内容已有进行中的发布任务，请先完成或取消再新建"));
+    }
     let pt_id = new_id();
     let payload = json!({"title": title, "content_asset_id": id, "requested_by": user.0.username, "mode": "human_upload", "checklist": ["核对账号授权", "AI内容标注", "发布后回填链接到 publishing_results"]});
     sqlx::query("INSERT INTO publishing_tasks (id, content_asset_id, platform, status, payload) VALUES ($1,$2,$3,'HUMAN_QUEUE',$4)")
@@ -126,28 +132,24 @@ pub async fn publish_content(
 
 pub async fn list_leads(State(state): State<AppState>, _user: AuthUser, Query(q): Query<HashMap<String, String>>) -> ApiResult {
     let rows: Vec<(String, Option<String>, Option<String>, Option<String>, Option<String>, Option<String>, String, String)> =
-        sqlx::query_as("SELECT id, business_unit_code, name, email, source_channel, country, lead_status, consent_status FROM leads ORDER BY created_at DESC LIMIT 200")
+        sqlx::query_as("SELECT id, business_unit_code, name, email, source_channel, country, lead_status, consent_status FROM leads WHERE ($1::text IS NULL OR business_unit_code=$1) AND ($2::text IS NULL OR lead_status=$2) ORDER BY created_at DESC LIMIT 200")
+            .bind(q.get("business_unit_code"))
+            .bind(q.get("lead_status"))
             .fetch_all(state.pool())
             .await?;
-    let mut items: Vec<Value> = rows
+    let items: Vec<Value> = rows
         .into_iter()
         .map(|(id, bu, name, email, channel, country, status, consent)| {
             json!({"id": id, "business_unit_code": bu, "name": name, "email": email, "source_channel": channel, "country": country, "lead_status": status, "consent_status": consent})
         })
         .collect();
-    if let Some(want) = q.get("business_unit_code") {
-        items.retain(|i| i["business_unit_code"].as_str() == Some(want.as_str()));
-    }
-    if let Some(want) = q.get("lead_status") {
-        items.retain(|i| i["lead_status"].as_str() == Some(want.as_str()));
-    }
     ok(json!({"items": items, "total": items.len()}))
 }
 
 pub async fn create_lead(State(state): State<AppState>, _user: AuthUser, Json(body): Json<Value>) -> ApiResult {
-    let email = body.get("email").and_then(|v| v.as_str());
-    if let Some(e) = email {
-        let dup: Option<(String,)> = sqlx::query_as("SELECT id FROM leads WHERE email=$1").bind(e).fetch_optional(state.pool()).await?;
+    let email = body.get("email").and_then(|v| v.as_str()).map(|e| e.trim().to_lowercase()).filter(|e| !e.is_empty());
+    if let Some(e) = &email {
+        let dup: Option<(String,)> = sqlx::query_as("SELECT id FROM leads WHERE lower(btrim(email))=$1").bind(e).fetch_optional(state.pool()).await?;
         if dup.is_some() {
             return Err(AppError::conflict("该邮箱线索已存在"));
         }
@@ -248,8 +250,10 @@ pub async fn list_publishing(State(state): State<AppState>, _user: AuthUser) -> 
         sqlx::query_as("SELECT id, content_asset_id, platform, account, status, payload, created_at::text FROM publishing_tasks ORDER BY created_at DESC LIMIT 100")
             .fetch_all(state.pool())
             .await?;
+    let ids: Vec<String> = tasks.iter().map(|(id, ..)| id.clone()).collect();
     let results: Vec<(String, Option<String>, Option<String>, Option<Value>, Option<String>)> =
-        sqlx::query_as("SELECT publishing_task_id, platform_post_id, published_url, metrics, published_at::text FROM publishing_results ORDER BY created_at DESC")
+        sqlx::query_as("SELECT publishing_task_id, platform_post_id, published_url, metrics, published_at::text FROM publishing_results WHERE publishing_task_id = ANY($1)")
+            .bind(&ids)
             .fetch_all(state.pool())
             .await?;
     let items: Vec<Value> = tasks
@@ -344,6 +348,17 @@ pub async fn update_product(
         }
         if target == "LISTED" && user.0.role != "ADMIN" {
             return Err(AppError::forbidden("商品上架是敏感动作，仅 ADMIN 可执行"));
+        }
+        // 审计红线4补强：状态机不可跳步
+        let cur: (String,) = sqlx::query_as("SELECT status FROM product_candidates WHERE id=$1").bind(&id).fetch_one(state.pool()).await?;
+        let allowed: &[&str] = match cur.0.as_str() {
+            "PENDING" => &["ANALYZED", "REJECTED"],
+            "ANALYZED" => &["APPROVED", "REJECTED"],
+            "APPROVED" => &["LISTED", "REJECTED"],
+            _ => &[],
+        };
+        if !allowed.contains(&target) {
+            return Err(AppError::conflict(format!("状态机不允许从 {} 跳到 {}（须走 ANALYZED→APPROVED→LISTED）", cur.0, target)));
         }
     }
     let res = sqlx::query("UPDATE product_candidates SET status=COALESCE($2,status), decision_note=COALESCE($3,decision_note), price=COALESCE($4,price), updated_at=now() WHERE id=$1")

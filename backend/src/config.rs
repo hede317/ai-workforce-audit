@@ -24,6 +24,7 @@ pub struct Config {
     pub smtp_pass: String,
     pub smtp_from: String,
     pub smtp_security: String,
+    pub cors_origins: String,
 }
 
 fn envs(key: &str, default: &str) -> String {
@@ -58,6 +59,7 @@ impl Config {
             smtp_pass: envs("SMTP_PASS", ""),
             smtp_from: envs("SMTP_FROM", ""),
             smtp_security: envs("SMTP_SECURITY", "ssl"),
+            cors_origins: envs("AWF_CORS_ORIGINS", ""),
         }
     }
 

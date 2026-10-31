@@ -105,10 +105,10 @@ export default function MemoryPage() {
           />
           <div className="mt-2 flex gap-2">
             <Button size="sm" onClick={add}>
-              保存
+              {t("c.save")}
             </Button>
             <Button size="sm" variant="ghost" onClick={() => setAdding(false)}>
-              取消
+              {t("c.cancel")}
             </Button>
           </div>
         </Card>

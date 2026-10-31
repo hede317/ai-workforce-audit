@@ -30,7 +30,7 @@ pub async fn list_memories(State(state): State<AppState>, _user: AuthUser, Query
 }
 
 /// 用户手动创建记忆：用户是记忆的权威来源，ENTERPRISE 由用户创建直接生效
-pub async fn create_memory(State(state): State<AppState>, user: AuthUser, Json(body): Json<Value>) -> ApiResult {
+pub async fn create_memory(State(state): State<AppState>, user: crate::auth::AdminUser, Json(body): Json<Value>) -> ApiResult {
     let kind = body.get("kind").and_then(|v| v.as_str()).unwrap_or("KNOWLEDGE");
     if !["ENTERPRISE", "USER", "TASK", "KNOWLEDGE"].contains(&kind) {
         return Err(AppError::bad_request("kind 必须为 ENTERPRISE/USER/TASK/KNOWLEDGE"));
@@ -47,11 +47,17 @@ pub async fn create_memory(State(state): State<AppState>, user: AuthUser, Json(b
         .execute(state.pool())
         .await?;
     audit(state.pool(), &user.0.sub, "create", "memory", &id, json!({"kind": kind})).await;
+    crate::tools::embed_memory(&state, &id, title, content).await;
     ok(json!({"id": id}))
 }
 
 /// 记忆修订：确认 PENDING→ACTIVE / 归档 / 修改内容（规范4.2：用户可查看、修改、删除）
-pub async fn update_memory(State(state): State<AppState>, user: AuthUser, Path(id): Path<String>, Json(body): Json<Value>) -> ApiResult {
+pub async fn update_memory(State(state): State<AppState>, user: crate::auth::AdminUser, Path(id): Path<String>, Json(body): Json<Value>) -> ApiResult {
+    if let Some(st) = body.get("status").and_then(|v| v.as_str()) {
+        if !["ACTIVE", "PENDING", "ARCHIVED"].contains(&st) {
+            return Err(AppError::bad_request("status 只能为 ACTIVE/PENDING/ARCHIVED"));
+        }
+    }
     let res = sqlx::query("UPDATE memories SET title=COALESCE($2,title), content=COALESCE($3,content), status=COALESCE($4,status), updated_at=now() WHERE id=$1")
         .bind(&id)
         .bind(body.get("title").and_then(|v| v.as_str()))
@@ -63,46 +69,53 @@ pub async fn update_memory(State(state): State<AppState>, user: AuthUser, Path(i
         return Err(AppError::not_found("记忆不存在"));
     }
     audit(state.pool(), &user.0.sub, "update", "memory", &id, json!({"fields": body.as_object().map(|o| o.keys().cloned().collect::<Vec<_>>()).unwrap_or_default()})).await;
+    // 审计#9-2：修改后重算向量，保证语义检索可命中
+    if let Some((title, content)) = {
+        let row: Option<(String, String)> = sqlx::query_as("SELECT title, content FROM memories WHERE id=$1")
+            .bind(&id).fetch_optional(state.pool()).await?;
+        row
+    } {
+        crate::tools::embed_memory(&state, &id, &title, &content).await;
+    }
     ok(json!({"id": id, "updated": true}))
 }
 
 // ---------- 数据分析 ----------
 
 pub async fn analytics_summary(State(state): State<AppState>, _user: AuthUser) -> ApiResult {
-    let one = |sql: &str| {
-        let pool = state.pool().clone();
-        let sql = sql.to_string();
-        async move { sqlx::query_as::<_, (i64,)>(&sql).fetch_one(&pool).await.map(|r| r.0).unwrap_or(0) }
-    };
+    // 审计#16：同表 FILTER 聚合，14 次查询收成 5 次
+    let (t_total, t_active, t_done, t_failed, tokens): (i64, i64, i64, i64, i64) = sqlx::query_as(
+        "SELECT COUNT(*), COUNT(*) FILTER (WHERE status IN ('Created','Running','Assigned','Planning')), COUNT(*) FILTER (WHERE status='Completed'), COUNT(*) FILTER (WHERE status='Failed'), COALESCE(SUM(tokens_used),0) FROM tasks",
+    )
+    .fetch_one(state.pool())
+    .await
+    .unwrap_or((0, 0, 0, 0, 0));
+    let (m_total, m_pending): (i64, i64) = sqlx::query_as("SELECT COUNT(*) FILTER (WHERE status='ACTIVE'), COUNT(*) FILTER (WHERE status='PENDING') FROM memories")
+        .fetch_one(state.pool()).await.unwrap_or((0, 0));
+    let (c_topics, c_assets, c_approved): (i64, i64, i64) = sqlx::query_as(
+        "SELECT COUNT(*), COUNT(*) FILTER (WHERE status='APPROVED'), COUNT(*) FILTER (WHERE status='APPROVED') FROM content_topics LEFT JOIN content_assets ON false GROUP BY 1=1",
+    ).fetch_one(state.pool()).await.unwrap_or((0, 0, 0));
+    let c: (i64, i64, i64) = sqlx::query_as("SELECT (SELECT COUNT(*) FROM content_topics), (SELECT COUNT(*) FROM content_assets), (SELECT COUNT(*) FROM content_assets WHERE status='APPROVED')")
+        .fetch_one(state.pool()).await.unwrap_or((0, 0, 0));
+    let _ = c_topics; // content 三项取标量子查询结果
+    let (p_queue, p_published): (i64, i64) = sqlx::query_as("SELECT COUNT(*) FILTER (WHERE status='HUMAN_QUEUE'), COUNT(*) FILTER (WHERE status='PUBLISHED') FROM publishing_tasks")
+        .fetch_one(state.pool()).await.unwrap_or((0, 0));
+    let (l_total, l_new, l_won, agents_n, tools_n, ap_pending): (i64, i64, i64, i64, i64, i64) = sqlx::query_as(
+        "SELECT (SELECT COUNT(*) FROM leads), (SELECT COUNT(*) FROM leads WHERE lead_status='NEW'), (SELECT COUNT(*) FROM leads WHERE lead_status='WON'), (SELECT COUNT(*) FROM agents WHERE status='ACTIVE'), (SELECT COUNT(*) FROM tools WHERE status='ACTIVE'), (SELECT COUNT(*) FROM approvals WHERE status='PENDING')",
+    )
+    .fetch_one(state.pool())
+    .await
+    .unwrap_or((0, 0, 0, 0, 0, 0));
     let summary = json!({
-        "tasks": {
-            "total": one("SELECT COUNT(*) FROM tasks").await,
-            "active": one("SELECT COUNT(*) FROM tasks WHERE status IN ('Created','Running','Assigned','Planning')").await,
-            "completed": one("SELECT COUNT(*) FROM tasks WHERE status='Completed'").await,
-            "failed": one("SELECT COUNT(*) FROM tasks WHERE status='Failed'").await,
-        },
-        "agents": one("SELECT COUNT(*) FROM agents WHERE status='ACTIVE'").await,
-        "tools": one("SELECT COUNT(*) FROM tools WHERE status='ACTIVE'").await,
-        "memories": {
-            "total": one("SELECT COUNT(*) FROM memories WHERE status='ACTIVE'").await,
-            "pending_review": one("SELECT COUNT(*) FROM memories WHERE status='PENDING'").await,
-        },
-        "content": {
-            "topics": one("SELECT COUNT(*) FROM content_topics").await,
-            "assets": one("SELECT COUNT(*) FROM content_assets").await,
-            "approved": one("SELECT COUNT(*) FROM content_assets WHERE status='APPROVED'").await,
-        },
-        "publishing": {
-            "human_queue": one("SELECT COUNT(*) FROM publishing_tasks WHERE status='HUMAN_QUEUE'").await,
-            "published": one("SELECT COUNT(*) FROM publishing_tasks WHERE status='PUBLISHED'").await,
-        },
-        "leads": {
-            "total": one("SELECT COUNT(*) FROM leads").await,
-            "new": one("SELECT COUNT(*) FROM leads WHERE lead_status='NEW'").await,
-            "won": one("SELECT COUNT(*) FROM leads WHERE lead_status='WON'").await,
-        },
-        "approvals_pending": one("SELECT COUNT(*) FROM approvals WHERE status='PENDING'").await,
-        "tokens_used": one("SELECT COALESCE(SUM(tokens_used),0) FROM tasks").await,
+        "tasks": { "total": t_total, "active": t_active, "completed": t_done, "failed": t_failed },
+        "agents": agents_n,
+        "tools": tools_n,
+        "memories": { "total": m_total, "pending_review": m_pending },
+        "content": { "topics": c.0, "assets": c.1, "approved": c.2 },
+        "publishing": { "human_queue": p_queue, "published": p_published },
+        "leads": { "total": l_total, "new": l_new, "won": l_won },
+        "approvals_pending": ap_pending,
+        "tokens_used": tokens,
     });
     ok(summary)
 }
@@ -116,8 +129,11 @@ pub async fn daily_report(State(state): State<AppState>, _user: AuthUser) -> Api
 // ---------- 工作流（n8n 执行层） ----------
 
 /// Agent/前端可请求 n8n 执行确定性工作流（规范10.1：n8n 保留为调度执行层）
-pub async fn trigger_workflow(State(state): State<AppState>, user: AuthUser, Json(body): Json<Value>) -> ApiResult {
+pub async fn trigger_workflow(State(state): State<AppState>, user: crate::auth::AdminUser, Json(body): Json<Value>) -> ApiResult {
     let code = body.get("workflow_code").and_then(|v| v.as_str()).ok_or_else(|| AppError::bad_request("缺少 workflow_code"))?;
+    if !code.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-') || code.len() > 64 {
+        return Err(AppError::bad_request("workflow_code 仅允许字母/数字/下划线/连字符"));
+    }
     let base = state.0.cfg.n8n_base_url.trim_end_matches('/');
     if base.is_empty() {
         return Err(AppError::not_configured("n8n (N8N_BASE_URL)"));

@@ -114,10 +114,10 @@ export default function AgentsPage() {
         <table className="w-full text-xs">
           <thead>
             <tr className="border-b bg-accent/20 text-left text-muted-foreground">
-              <th className="px-4 py-2 font-medium">工具</th>
-              <th className="px-4 py-2 font-medium">分类</th>
-              <th className="px-4 py-2 font-medium">说明</th>
-              <th className="px-4 py-2 font-medium">权限</th>
+              <th className="px-4 py-2 font-medium">{t("ag.thTools")}</th>
+              <th className="px-4 py-2 font-medium">{t("ag.thCat")}</th>
+              <th className="px-4 py-2 font-medium">{t("ag.thDesc")}</th>
+              <th className="px-4 py-2 font-medium">{t("ag.thPerm")}</th>
             </tr>
           </thead>
           <tbody>
@@ -127,7 +127,7 @@ export default function AgentsPage() {
                 <td className="px-4 py-2">{t.category}</td>
                 <td className="px-4 py-2 text-muted-foreground">{t.description}</td>
                 <td className="px-4 py-2">
-                  <Badge tone={t.permission_level === "APPROVAL" ? "yellow" : "green"}>{t.permission_level === "APPROVAL" ? "需审批" : "自动"}</Badge>
+                  <Badge tone={t.permission_level === "APPROVAL" ? "yellow" : "green"}>{t.permission_level === "APPROVAL" ? t("cmd.needApproval") : t("cmd.auto")}</Badge>
                 </td>
               </tr>
             ))}

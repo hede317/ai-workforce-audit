@@ -117,7 +117,7 @@ export default function ContentPage() {
               </select>
               <input className="h-8 w-40 rounded-md border bg-background px-3 text-xs" placeholder={t("ct.phAudience")} value={form.audience} onChange={(e) => setForm({ ...form, audience: e.target.value })} />
               <Button size="sm" variant="success" onClick={addTopic}>
-                保存
+                {t("c.save")}
               </Button>
             </div>
           </div>
@@ -149,7 +149,7 @@ export default function ContentPage() {
       </Card>
 
       <Card>
-        <CardHeader title={t("ct.assets")} desc="DRAFT → APPROVED →（发布中心生成发布包）→ PUBLISHED" />
+        <CardHeader title={t("ct.assets")} desc={t("ct.assetsDesc")} />
         {contents.length === 0 ? (
           <Empty text={t("ct.emptyContents")} />
         ) : (

@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Play, Send, Square } from "lucide-react";
 import { get, post } from "@/lib/api";
 import { useT } from "@/lib/i18n";
@@ -26,14 +26,20 @@ export default function CommanderPage() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const loadBus = async () => {
-    try {
-      const d = await get<any>("/api/v1/business-units");
-      setBus(d.items || []);
-      if (d.items?.length) setBu(d.items[0].code);
-    } catch {}
-  };
-  loadBus();
+  // 审计#5(P0)：渲染期发起请求=setState死循环打爆后端，必须挂载时仅一次
+  useEffect(() => {
+    let active = true;
+    get<any>("/api/v1/business-units")
+      .then((d) => {
+        if (!active) return;
+        setBus(d.items || []);
+        if (d.items?.length) setBu((prev) => prev || d.items[0].code);
+      })
+      .catch(() => {});
+    return () => {
+      active = false;
+    };
+  }, []);
 
   async function submitGoal() {
     if (!goal.trim()) return;

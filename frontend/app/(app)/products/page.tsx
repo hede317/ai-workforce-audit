@@ -91,7 +91,7 @@ export default function ProductsPage() {
             <input className="h-8 w-28 rounded-md border bg-background px-3 text-xs" placeholder={t("pr.phPrice")} value={form.price} onChange={(e) => setForm({ ...form, price: e.target.value })} />
             <input className="h-8 min-w-[200px] flex-1 rounded-md border bg-background px-3 text-xs" placeholder={t("pr.phUrl")} value={form.source_url} onChange={(e) => setForm({ ...form, source_url: e.target.value })} />
             <Button size="sm" variant="success" onClick={add}>
-              保存
+              {t("c.save")}
             </Button>
           </div>
         </Card>
@@ -149,7 +149,7 @@ export default function ProductsPage() {
                   ) : null}
                   {p.source_url ? (
                     <a href={p.source_url} target="_blank" rel="noreferrer" className="inline-flex h-7 items-center rounded-md px-2.5 text-xs text-muted-foreground hover:bg-accent hover:text-foreground">
-                      链接
+                      {t("c.link")}
                     </a>
                   ) : null}
                 </div>
