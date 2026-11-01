@@ -130,12 +130,65 @@ pub async fn dispatch(code: &str, args: Value, ctx: &ToolCtx<'_>) -> Result<Valu
     }
 }
 
+async fn usage_today(state: &AppState) -> Result<(i64, f64), AppError> {
+    match sqlx::query_as::<_, (i64, f64)>(
+        "SELECT COALESCE(SUM(tokens),0)::bigint, COALESCE(SUM(cost_usd),0)::float8 FROM usage_ledger WHERE created_at::date = CURRENT_DATE",
+    )
+    .fetch_one(state.pool())
+    .await
+    {
+        Ok(r) => Ok(r),
+        Err(e) => {
+            eprintln!("[usage-today] 查询失败: {e}");
+            Err(AppError::internal(format!("用量查询失败: {e}")))
+        }
+    }
+}
+
+pub(crate) async fn record_usage(state: &AppState, task_id: Option<&str>, tokens: u64) {
+    if tokens == 0 {
+        return;
+    }
+    let cost = tokens as f64 / 1000.0 * state.0.cfg.ai_cost_per_1k_usd;
+    let _ = sqlx::query(
+        "INSERT INTO usage_ledger (id, task_id, tokens, cost_usd) VALUES ($1,$2,$3,$4)",
+    )
+    .bind(crate::auth::new_id())
+    .bind(task_id)
+    .bind(tokens as i64)
+    .bind(cost)
+    .execute(state.pool())
+    .await;
+}
+
 async fn call_ai(
     state: &AppState,
     system: &str,
     user: &str,
     max_tokens: u64,
 ) -> Result<crate::ai::ChatReply, AppError> {
+    // 三审T-003：日预算前置检查（超限 429，即使模型可用也拒绝）
+    let (used_tokens, used_cost) = usage_today(state).await?;
+    if state.0.cfg.daily_token_limit > 0 && used_tokens >= state.0.cfg.daily_token_limit {
+        return Err(AppError::new(
+            axum::http::StatusCode::TOO_MANY_REQUESTS,
+            "BUDGET_EXCEEDED",
+            format!(
+                "当日 Token 预算已用尽（{}/{}）",
+                used_tokens, state.0.cfg.daily_token_limit
+            ),
+        ));
+    }
+    if state.0.cfg.daily_cost_limit_usd > 0.0 && used_cost >= state.0.cfg.daily_cost_limit_usd {
+        return Err(AppError::new(
+            axum::http::StatusCode::TOO_MANY_REQUESTS,
+            "BUDGET_EXCEEDED",
+            format!(
+                "当日费用预算已用尽（${:.2}/${:.2}）",
+                used_cost, state.0.cfg.daily_cost_limit_usd
+            ),
+        ));
+    }
     if !state.0.cfg.ai_available() {
         return Err(AppError::not_configured(
             "AI 模型网关 (AI_BASE_URL/AI_API_KEY/AI_MODEL)",
@@ -147,7 +200,7 @@ async fn call_ai(
         model: &state.0.cfg.ai_model,
         http: &state.0.http,
     };
-    provider
+    let reply = provider
         .chat(
             &[
                 ChatMessage {
@@ -161,7 +214,9 @@ async fn call_ai(
             ],
             max_tokens,
         )
-        .await
+        .await?;
+    record_usage(state, None, reply.tokens).await;
+    Ok(reply)
 }
 
 /// 审计#10：受限地址判定（std 的 is_private/is_link_local 尚未稳定，手动实现）
@@ -208,8 +263,8 @@ async fn validate_external_url(raw: &str) -> Result<String, AppError> {
     };
     for ip in &addrs {
         if is_restricted_ip(ip) {
-            return Err(AppError::forbidden(format!(
-                "SSRF 防护：拒绝访问内网/保留地址 {ip}"
+            return Err(AppError::ssrf(format!(
+                "SSRF_BLOCKED: 拒绝访问内网/保留地址 {ip}"
             )));
         }
     }
@@ -217,15 +272,10 @@ async fn validate_external_url(raw: &str) -> Result<String, AppError> {
 }
 
 /// 审计#10：限量抓取（重定向禁用 + 512KB 上限），防 OOM
-async fn fetch_limited(
-    _state: &AppState,
-    url: &str,
-    max: usize,
-) -> Result<(u16, String), AppError> {
-    let safe_url = validate_external_url(url).await?;
-    // 三审P1-D：DNS重绑定防护——校验后把连接钉死在已验证IP上（reqwest resolve覆盖）
-    let parsed =
-        reqwest::Url::parse(&safe_url).map_err(|_| AppError::bad_request("URL 无法解析"))?;
+/// T-001：单跳抓取——解析→全IP校验→钉死IP连接，10s总超时
+async fn fetch_one_hop(url: &str) -> Result<reqwest::Response, AppError> {
+    validate_external_url(url).await?;
+    let parsed = reqwest::Url::parse(url).map_err(|_| AppError::bad_request("URL 无法解析"))?;
     let host = parsed
         .host_str()
         .ok_or_else(|| AppError::bad_request("URL 缺少主机名"))?
@@ -236,27 +286,57 @@ async fn fetch_limited(
     } else {
         tokio::net::lookup_host((host.as_str(), port))
             .await
-            .map_err(|_| AppError::bad_request(format!("域名解析失败: {host}")))?
+            .map_err(|_| AppError::ssrf(format!("SSRF_BLOCKED: 域名解析失败或被拦截: {host}")))?
             .map(|s| s.ip())
             .collect()
     };
     let safe_ip = addrs
         .into_iter()
         .find(|ip| !is_restricted_ip(ip))
-        .ok_or_else(|| AppError::forbidden("SSRF 防护：该域名全部解析到受限地址"))?;
-    // 三审P1-D：每次现建"钉死IP"客户端（Client级resolve），连接只会到已验证地址——DNS重绑定彻底封死
+        .ok_or_else(|| AppError::ssrf(format!("SSRF_BLOCKED: {host} 解析到内网/保留地址")))?;
     let pinned = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(30))
+        .timeout(std::time::Duration::from_secs(10))
         .user_agent("HedeYou-AI-Workforce/0.1")
         .redirect(reqwest::redirect::Policy::none())
         .resolve(&host, std::net::SocketAddr::new(safe_ip, port))
         .build()
         .map_err(|e| AppError::internal(format!("抓取客户端构建失败: {e}")))?;
-    let resp = pinned
-        .get(&safe_url)
+    pinned
+        .get(url)
         .send()
         .await
-        .map_err(|e| AppError::internal(format!("网页抓取失败: {e}")))?;
+        .map_err(|e| AppError::internal(format!("网页抓取失败: {e}")))
+}
+
+/// T-001：手动跟随重定向最多3跳，每跳重新全量校验（含钉IP），响应体限量
+async fn fetch_limited(
+    _state: &AppState,
+    url: &str,
+    max: usize,
+) -> Result<(u16, String), AppError> {
+    let mut current = url.to_string();
+    let mut hops = 0;
+    let resp = loop {
+        let resp = fetch_one_hop(&current).await?;
+        if resp.status().is_redirection() {
+            if hops >= 3 {
+                return Err(AppError::ssrf("SSRF_BLOCKED: 重定向超过3跳上限"));
+            }
+            let loc = resp
+                .headers()
+                .get(reqwest::header::LOCATION)
+                .and_then(|v| v.to_str().ok())
+                .ok_or_else(|| AppError::ssrf("SSRF_BLOCKED: 3xx 无 Location"))?
+                .to_string();
+            let next = reqwest::Url::parse(&current)
+                .and_then(|base| base.join(&loc))
+                .map_err(|_| AppError::ssrf("SSRF_BLOCKED: 重定向目标URL非法"))?;
+            hops += 1;
+            current = next.to_string();
+            continue;
+        }
+        break resp;
+    };
     let status = resp.status().as_u16();
     if let Some(len) = resp.content_length() {
         if len as usize > max {

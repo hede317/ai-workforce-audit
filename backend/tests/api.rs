@@ -1106,3 +1106,173 @@ async fn audit3_cancel_created_then_state_guard() {
     .await;
     assert_eq!(st, StatusCode::CONFLICT);
 }
+
+#[tokio::test]
+async fn t001_ssrf_blocked_codes() {
+    let _g = SERIAL.lock().await;
+    let (app, _) = setup().await;
+    let token = login(&app).await;
+    for url in [
+        "http://127.0.0.1:8600/health",
+        "http://169.254.169.254/latest/meta-data/",
+        "http://localhost/anything",
+    ] {
+        let (st, v) = send(
+            app.clone(),
+            req(
+                "POST",
+                "/api/v1/tools/web.fetch/invoke",
+                Some(&token),
+                Some(json!({"url": url})),
+            ),
+        )
+        .await;
+        assert_eq!(st, StatusCode::BAD_REQUEST, "{url}: {v}");
+        assert_eq!(v["error"]["code"], "SSRF_BLOCKED", "{url}: {v}");
+    }
+}
+
+#[tokio::test]
+async fn t001_ssrf_redirect_to_internal_blocked() {
+    let _g = SERIAL.lock().await;
+    let (app, _) = setup().await;
+    let token = login(&app).await;
+    // 本地起一个一次性 302 跳板：跳到 http://127.0.0.1:9/（环回），验证逐跳重校验
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        if let Ok((mut sock, _)) = listener.accept().await {
+            use tokio::io::AsyncWriteExt as _;
+            let _ = sock
+                .write_all(
+                    b"HTTP/1.1 302 Found\r\nLocation: http://127.0.0.1:9/next\r\nContent-Length: 0\r\n\r\n",
+                )
+                .await;
+        }
+    });
+    let (st, v) = send(
+        app,
+        req(
+            "POST",
+            "/api/v1/tools/web.fetch/invoke",
+            Some(&token),
+            Some(json!({"url": format!("http://{addr}/jump")})),
+        ),
+    )
+    .await;
+    // 第一跳是本机环回（127.0.0.1 受限名单）→ 在连接前即被拦
+    assert_eq!(st, StatusCode::BAD_REQUEST, "{v}");
+    assert_eq!(v["error"]["code"], "SSRF_BLOCKED");
+}
+
+#[tokio::test]
+async fn t002_concurrent_approve_only_one_wins() {
+    let _g = SERIAL.lock().await;
+    let (app, pool) = setup().await;
+    let token = login(&app).await;
+    let goal = format!("并发批准-{}", Uuid::new_v4().simple());
+    let (_, g) = send(
+        app.clone(),
+        req(
+            "POST",
+            "/api/v1/commander/goals",
+            Some(&token),
+            Some(json!({"goal": goal})),
+        ),
+    )
+    .await;
+    let root_id = g["data"]["root_id"].as_str().unwrap().to_string();
+    let _ = send(
+        app.clone(),
+        req(
+            "POST",
+            &format!("/api/v1/commander/goals/{root_id}/execute"),
+            Some(&token),
+            Some(json!({"sync": true})),
+        ),
+    )
+    .await;
+    let (_, ap) = send(
+        app.clone(),
+        req(
+            "GET",
+            "/api/v1/approvals?status=PENDING",
+            Some(&token),
+            None,
+        ),
+    )
+    .await;
+    let apid = ap["data"]["items"][0]["id"].as_str().unwrap().to_string();
+
+    // 并发 10 次批准同一审批：FOR UPDATE + 条件更新 → 只允许 1 次成功
+    let mut futs = Vec::new();
+    for _ in 0..10 {
+        let app_c = app.clone();
+        let tok_c = token.clone();
+        let apid_c = apid.clone();
+        futs.push(async move {
+            send(
+                app_c,
+                req(
+                    "POST",
+                    &format!("/api/v1/approvals/{apid_c}/decide"),
+                    Some(&tok_c),
+                    Some(json!({"decision": "APPROVED"})),
+                ),
+            )
+            .await
+        });
+    }
+    let results = futures_util::future::join_all(futs).await;
+    let successes = results.iter().filter(|(st, _)| st.is_success()).count();
+    assert_eq!(successes, 1, "并发10次批准应只有1次成功");
+    // 任务只执行一次（Running 事件数=1）
+    let running: (i64,) =
+        sqlx::query_as("SELECT COUNT(*) FROM task_events WHERE task_id=$1 AND event='Running'")
+            .bind(&apid_parsed_task(&pool, &apid).await)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(running.0, 1, "任务必须只执行一次");
+}
+
+async fn apid_parsed_task(pool: &PgPool, apid: &str) -> String {
+    let (tid,): (String,) = sqlx::query_as("SELECT task_id FROM approvals WHERE id=$1")
+        .bind(apid)
+        .fetch_one(pool)
+        .await
+        .unwrap();
+    tid
+}
+
+#[tokio::test]
+async fn t003_daily_budget_gate() {
+    let _g = SERIAL.lock().await;
+    std::env::set_var("DAILY_TOKEN_LIMIT", "1");
+    // 重建 app 使配置生效
+    let (app, pool) = setup().await;
+    let token = login(&app).await;
+    // 台账里已有当日 1 token 消耗 → 预算即满
+    sqlx::query("INSERT INTO usage_ledger (id, task_id, tokens, cost_usd) VALUES ($1,NULL,1,0)")
+        .bind(Uuid::new_v4().simple().to_string())
+        .execute(&pool)
+        .await
+        .unwrap();
+    let (st, v) = send(
+        app.clone(),
+        req(
+            "POST",
+            "/api/v1/tools/ai.generate/invoke",
+            Some(&token),
+            Some(json!({"prompt": "测试"})),
+        ),
+    )
+    .await;
+    assert_eq!(
+        st,
+        StatusCode::TOO_MANY_REQUESTS,
+        "日预算必须拦下AI调用: {v}"
+    );
+    assert_eq!(v["error"]["code"], "BUDGET_EXCEEDED");
+    std::env::remove_var("DAILY_TOKEN_LIMIT");
+}

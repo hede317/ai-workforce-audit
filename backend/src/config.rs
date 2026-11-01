@@ -27,6 +27,9 @@ pub struct Config {
     pub smtp_security: String,
     pub cors_origins: String,
     pub openmaic_base: String,
+    pub daily_token_limit: i64,
+    pub daily_cost_limit_usd: f64,
+    pub ai_cost_per_1k_usd: f64,
 }
 
 fn envs(key: &str, default: &str) -> String {
@@ -64,6 +67,9 @@ impl Config {
             smtp_security: envs("SMTP_SECURITY", "ssl"),
             cors_origins: envs("AWF_CORS_ORIGINS", ""),
             openmaic_base: envs("OPENMAIC_BASE", "https://open.maic.chat"),
+            daily_token_limit: envs("DAILY_TOKEN_LIMIT", "0").parse().unwrap_or(0), // 0=不限
+            daily_cost_limit_usd: envs("DAILY_COST_LIMIT_USD", "0").parse().unwrap_or(0.0),
+            ai_cost_per_1k_usd: envs("AI_COST_PER_1K_USD", "0").parse().unwrap_or(0.0),
         }
     }
 

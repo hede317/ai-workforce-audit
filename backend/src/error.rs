@@ -38,6 +38,10 @@ impl AppError {
     pub fn internal(msg: impl Into<String>) -> Self {
         Self::new(StatusCode::INTERNAL_SERVER_ERROR, "INTERNAL", msg)
     }
+    /// T-001：SSRF 拦截统一错误码（验收标准指定 400 + SSRF_BLOCKED）
+    pub fn ssrf(detail: impl Into<String>) -> Self {
+        Self::new(StatusCode::BAD_REQUEST, "SSRF_BLOCKED", detail)
+    }
     /// 外部能力未配置（AI/平台API/n8n），按规范要求返回真实待配置状态而非假数据
     pub fn not_configured(what: &str) -> Self {
         Self::new(

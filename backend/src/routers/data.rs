@@ -268,3 +268,19 @@ pub async fn list_executions(State(state): State<AppState>, _user: AuthUser) -> 
         .collect();
     ok(json!({"items": items, "total": items.len()}))
 }
+
+/// 三审T-003：当日 AI 用量与预算
+pub async fn usage_today(State(state): State<AppState>, _user: AuthUser) -> ApiResult {
+    let (tokens, cost): (i64, f64) = sqlx::query_as(
+        "SELECT COALESCE(SUM(tokens),0)::bigint, COALESCE(SUM(cost_usd),0)::float8 FROM usage_ledger WHERE created_at::date = CURRENT_DATE",
+    )
+    .fetch_one(state.pool())
+    .await
+    .unwrap_or((0, 0.0));
+    ok(json!({
+        "tokens": tokens,
+        "cost_usd": cost,
+        "daily_token_limit": state.0.cfg.daily_token_limit,
+        "daily_cost_limit_usd": state.0.cfg.daily_cost_limit_usd,
+    }))
+}

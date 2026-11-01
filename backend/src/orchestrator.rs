@@ -701,10 +701,17 @@ pub async fn decide_approval(
             }
         }
     }
+    // 三审T-002：同一事务内把任务置为 Assigned（可被 execute_task 原子抢单认领）
+    if decision == "APPROVED" {
+        sqlx::query("UPDATE tasks SET status='Assigned' WHERE id=$1")
+            .bind(&task_id)
+            .execute(&mut *tx)
+            .await?;
+    }
     tx.commit().await?;
+    // 事务提交后按决定执行副作用
     match decision {
         "APPROVED" => {
-            set_task_status(state, &task_id, "Created").await;
             add_event(
                 state,
                 &task_id,

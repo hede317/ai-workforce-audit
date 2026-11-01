@@ -119,6 +119,7 @@ pub fn build_router(state: AppState) -> Router {
         )
         .route("/api/v1/memories/:id", put(data::update_memory))
         // 分析与工作流
+        .route("/api/v1/usage/today", get(data::usage_today))
         .route("/api/v1/analytics/summary", get(data::analytics_summary))
         .route("/api/v1/analytics/daily-report", get(data::daily_report))
         .route("/api/v1/workflows/trigger", post(data::trigger_workflow))
