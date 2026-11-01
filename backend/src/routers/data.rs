@@ -1,5 +1,5 @@
 use crate::auth::{audit, new_id, AuthUser};
-use crate::error::{ok, AppError, ApiResult};
+use crate::error::{ok, ApiResult, AppError};
 use crate::state::AppState;
 use crate::tools::{dispatch, ToolCtx};
 use axum::extract::{Path, Query, State};
@@ -9,10 +9,16 @@ use std::collections::HashMap;
 
 // ---------- 记忆中心（四类记忆） ----------
 
-pub async fn list_memories(State(state): State<AppState>, _user: AuthUser, Query(q): Query<HashMap<String, String>>) -> ApiResult {
+pub async fn list_memories(
+    State(state): State<AppState>,
+    _user: AuthUser,
+    Query(q): Query<HashMap<String, String>>,
+) -> ApiResult {
     let kind = q.get("kind");
     let status = q.get("status");
-    let like = q.get("q").map(|s| format!("%{}%", crate::tools::escape_like(s)));
+    let like = q
+        .get("q")
+        .map(|s| format!("%{}%", crate::tools::escape_like(s)));
     let rows: Vec<(String, String, String, String, Option<Value>, Option<String>, String, String)> =
         sqlx::query_as("SELECT id, kind, title, left(content,500), tags, source_task_id, status, updated_at::text FROM memories WHERE ($1::text IS NULL OR kind=$1) AND ($2::text IS NULL OR status=$2) AND ($3::text IS NULL OR title LIKE $3 ESCAPE '\\' OR content LIKE $3 ESCAPE '\\') ORDER BY updated_at DESC LIMIT 200")
             .bind(kind)
@@ -30,13 +36,28 @@ pub async fn list_memories(State(state): State<AppState>, _user: AuthUser, Query
 }
 
 /// 用户手动创建记忆：用户是记忆的权威来源，ENTERPRISE 由用户创建直接生效
-pub async fn create_memory(State(state): State<AppState>, user: crate::auth::AdminUser, Json(body): Json<Value>) -> ApiResult {
-    let kind = body.get("kind").and_then(|v| v.as_str()).unwrap_or("KNOWLEDGE");
+pub async fn create_memory(
+    State(state): State<AppState>,
+    user: crate::auth::AdminUser,
+    Json(body): Json<Value>,
+) -> ApiResult {
+    let kind = body
+        .get("kind")
+        .and_then(|v| v.as_str())
+        .unwrap_or("KNOWLEDGE");
     if !["ENTERPRISE", "USER", "TASK", "KNOWLEDGE"].contains(&kind) {
-        return Err(AppError::bad_request("kind 必须为 ENTERPRISE/USER/TASK/KNOWLEDGE"));
+        return Err(AppError::bad_request(
+            "kind 必须为 ENTERPRISE/USER/TASK/KNOWLEDGE",
+        ));
     }
-    let title = body.get("title").and_then(|v| v.as_str()).ok_or_else(|| AppError::bad_request("缺少 title"))?;
-    let content = body.get("content").and_then(|v| v.as_str()).ok_or_else(|| AppError::bad_request("缺少 content"))?;
+    let title = body
+        .get("title")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| AppError::bad_request("缺少 title"))?;
+    let content = body
+        .get("content")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| AppError::bad_request("缺少 content"))?;
     let id = new_id();
     sqlx::query("INSERT INTO memories (id, kind, title, content, tags, status) VALUES ($1,$2,$3,$4,$5,'ACTIVE')")
         .bind(&id)
@@ -46,16 +67,31 @@ pub async fn create_memory(State(state): State<AppState>, user: crate::auth::Adm
         .bind(body.get("tags").cloned().unwrap_or(json!([])))
         .execute(state.pool())
         .await?;
-    audit(state.pool(), &user.0.sub, "create", "memory", &id, json!({"kind": kind})).await;
+    audit(
+        state.pool(),
+        &user.0.sub,
+        "create",
+        "memory",
+        &id,
+        json!({"kind": kind}),
+    )
+    .await;
     crate::tools::embed_memory(&state, &id, title, content).await;
     ok(json!({"id": id}))
 }
 
 /// 记忆修订：确认 PENDING→ACTIVE / 归档 / 修改内容（规范4.2：用户可查看、修改、删除）
-pub async fn update_memory(State(state): State<AppState>, user: crate::auth::AdminUser, Path(id): Path<String>, Json(body): Json<Value>) -> ApiResult {
+pub async fn update_memory(
+    State(state): State<AppState>,
+    user: crate::auth::AdminUser,
+    Path(id): Path<String>,
+    Json(body): Json<Value>,
+) -> ApiResult {
     if let Some(st) = body.get("status").and_then(|v| v.as_str()) {
         if !["ACTIVE", "PENDING", "ARCHIVED"].contains(&st) {
-            return Err(AppError::bad_request("status 只能为 ACTIVE/PENDING/ARCHIVED"));
+            return Err(AppError::bad_request(
+                "status 只能为 ACTIVE/PENDING/ARCHIVED",
+            ));
         }
     }
     let res = sqlx::query("UPDATE memories SET title=COALESCE($2,title), content=COALESCE($3,content), status=COALESCE($4,status), updated_at=now() WHERE id=$1")
@@ -71,8 +107,11 @@ pub async fn update_memory(State(state): State<AppState>, user: crate::auth::Adm
     audit(state.pool(), &user.0.sub, "update", "memory", &id, json!({"fields": body.as_object().map(|o| o.keys().cloned().collect::<Vec<_>>()).unwrap_or_default()})).await;
     // 审计#9-2：修改后重算向量，保证语义检索可命中
     if let Some((title, content)) = {
-        let row: Option<(String, String)> = sqlx::query_as("SELECT title, content FROM memories WHERE id=$1")
-            .bind(&id).fetch_optional(state.pool()).await?;
+        let row: Option<(String, String)> =
+            sqlx::query_as("SELECT title, content FROM memories WHERE id=$1")
+                .bind(&id)
+                .fetch_optional(state.pool())
+                .await?;
         row
     } {
         crate::tools::embed_memory(&state, &id, &title, &content).await;
@@ -126,7 +165,11 @@ pub async fn analytics_summary(State(state): State<AppState>, _user: AuthUser) -
 }
 
 pub async fn daily_report(State(state): State<AppState>, _user: AuthUser) -> ApiResult {
-    let ctx = ToolCtx { state: &state, task_id: "manual-report".into(), approved: true };
+    let ctx = ToolCtx {
+        state: &state,
+        task_id: "manual-report".into(),
+        approved: true,
+    };
     let value = dispatch("data.daily_report", json!({}), &ctx).await?;
     ok(value)
 }
@@ -134,10 +177,23 @@ pub async fn daily_report(State(state): State<AppState>, _user: AuthUser) -> Api
 // ---------- 工作流（n8n 执行层） ----------
 
 /// Agent/前端可请求 n8n 执行确定性工作流（规范10.1：n8n 保留为调度执行层）
-pub async fn trigger_workflow(State(state): State<AppState>, user: crate::auth::AdminUser, Json(body): Json<Value>) -> ApiResult {
-    let code = body.get("workflow_code").and_then(|v| v.as_str()).ok_or_else(|| AppError::bad_request("缺少 workflow_code"))?;
-    if !code.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-') || code.len() > 64 {
-        return Err(AppError::bad_request("workflow_code 仅允许字母/数字/下划线/连字符"));
+pub async fn trigger_workflow(
+    State(state): State<AppState>,
+    user: crate::auth::AdminUser,
+    Json(body): Json<Value>,
+) -> ApiResult {
+    let code = body
+        .get("workflow_code")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| AppError::bad_request("缺少 workflow_code"))?;
+    if !code
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+        || code.len() > 64
+    {
+        return Err(AppError::bad_request(
+            "workflow_code 仅允许字母/数字/下划线/连字符",
+        ));
     }
     let base = state.0.cfg.n8n_base_url.trim_end_matches('/');
     if base.is_empty() {
@@ -162,14 +218,32 @@ pub async fn trigger_workflow(State(state): State<AppState>, user: crate::auth::
         Ok(r) => {
             let status_code = r.status().as_u16();
             let payload: Value = r.json().await.unwrap_or(json!({}));
-            let wf_status = if (200..300).contains(&status_code) { "COMPLETED" } else { "FAILED" };
-            sqlx::query("UPDATE workflow_executions SET status=$2, finished_at=now(), error=$3 WHERE id=$1")
-                .bind(&exec_id)
-                .bind(wf_status)
-                .bind(if wf_status == "FAILED" { Some(format!("HTTP {status_code}")) } else { None })
-                .execute(state.pool())
-                .await?;
-            audit(state.pool(), &user.0.sub, "workflow_trigger", "workflow_execution", &exec_id, json!({"code": code})).await;
+            let wf_status = if (200..300).contains(&status_code) {
+                "COMPLETED"
+            } else {
+                "FAILED"
+            };
+            sqlx::query(
+                "UPDATE workflow_executions SET status=$2, finished_at=now(), error=$3 WHERE id=$1",
+            )
+            .bind(&exec_id)
+            .bind(wf_status)
+            .bind(if wf_status == "FAILED" {
+                Some(format!("HTTP {status_code}"))
+            } else {
+                None
+            })
+            .execute(state.pool())
+            .await?;
+            audit(
+                state.pool(),
+                &user.0.sub,
+                "workflow_trigger",
+                "workflow_execution",
+                &exec_id,
+                json!({"code": code}),
+            )
+            .await;
             ok(json!({"execution_id": exec_id, "status": wf_status, "response": payload}))
         }
         Err(e) => {

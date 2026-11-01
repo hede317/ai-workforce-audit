@@ -49,6 +49,16 @@ cd backend && cargo test
 
 要全自动化（AI 拆解/AI 生成内容），在 `.env` 配 `AI_BASE_URL/AI_API_KEY/AI_MODEL`（任意 OpenAI 兼容网关，例如本机 one-api `http://127.0.0.1:3100/v1`）。**未配置 AI 时系统照常可用**：CEO 走离线模板拆解，确定性工具（选题模板/记忆/日报/审批）全部真实工作。
 
+## 功能状态矩阵（三审规范：IMPLEMENTED_AND_TESTED / CONFIGURED / PLACEHOLDER / NOT_IMPLEMENTED）
+
+| 模块 | 状态 | 说明 |
+|---|---|---|
+| Commander/编排器/审批/记忆/雷达/选品/线索/发布中心 | **IMPLEMENTED_AND_TESTED** | `cargo test` 自动计数（CI 输出为准，当前 20 条） |
+| AI生成/翻译/文章/视频脚本 | **CONFIGURED** | 填 AI_* 三件套即生效，未配返回503诚实态 |
+| MPT出片/WordPress发布 | **CONFIGURED** | MPT_WORKER_URL+MPT_TOKEN / wp配置后生效 |
+| TikTok/抖音官方API自动发布、GA4/GSC、物流对接、客诉工单 | **NOT_IMPLEMENTED**（二期） | 人工队列已兜底；客诉/物流按 Growth OS 对齐方案排期 |
+| 多租户RLS、 campaigns 前端页 | **PLACEHOLDER** | tenant_id 预留未启用；后端API已有前端未挂 |
+
 ## 已实现 vs 待配置 vs 未做（诚实状态矩阵）
 
 ### ✅ 已实现并测试（cargo test 7/7 绿）

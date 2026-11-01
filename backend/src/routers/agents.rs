@@ -1,5 +1,5 @@
 use crate::auth::{audit, AdminUser, AuthUser};
-use crate::error::{ok, AppError, ApiResult};
+use crate::error::{ok, ApiResult, AppError};
 use crate::models::Task;
 use crate::orchestrator;
 use crate::state::AppState;
@@ -71,35 +71,56 @@ pub async fn create_goal(
     user: AuthUser,
     Json(body): Json<Value>,
 ) -> ApiResult {
-    let goal = body.get("goal").and_then(|v| v.as_str()).ok_or_else(|| AppError::bad_request("缺少 goal"))?;
-    let bu = body.get("business_unit_code").and_then(|v| v.as_str()).map(|s| s.to_string());
+    let goal = body
+        .get("goal")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| AppError::bad_request("缺少 goal"))?;
+    let bu = body
+        .get("business_unit_code")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
     let result = orchestrator::create_goal(&state, goal, bu, &user.0.username).await?;
-    audit(state.pool(), &user.0.sub, "create_goal", "task", result["root_id"].as_str().unwrap_or(""), json!({"goal": goal})).await;
+    audit(
+        state.pool(),
+        &user.0.sub,
+        "create_goal",
+        "task",
+        result["root_id"].as_str().unwrap_or(""),
+        json!({"goal": goal}),
+    )
+    .await;
     ok(result)
 }
 
-pub async fn get_goal(State(state): State<AppState>, _user: AuthUser, Path(id): Path<String>) -> ApiResult {
-    let rows: Vec<Task> = sqlx::query_as("SELECT * FROM tasks WHERE id=$1 OR root_id=$1 ORDER BY depth, created_at")
-        .bind(&id)
-        .fetch_all(state.pool())
-        .await?;
-    if rows.is_empty() || (_user.0.role != "ADMIN" && rows[0].created_by.as_deref() != Some(_user.0.username.as_str())) {
+pub async fn get_goal(
+    State(state): State<AppState>,
+    _user: AuthUser,
+    Path(id): Path<String>,
+) -> ApiResult {
+    let rows: Vec<Task> =
+        sqlx::query_as("SELECT * FROM tasks WHERE id=$1 OR root_id=$1 ORDER BY depth, created_at")
+            .bind(&id)
+            .fetch_all(state.pool())
+            .await?;
+    if rows.is_empty()
+        || (_user.0.role != "ADMIN"
+            && rows[0].created_by.as_deref() != Some(_user.0.username.as_str()))
+    {
         return Err(AppError::not_found("目标不存在"));
     }
     let root = &rows[0];
-    let children: Vec<Value> = rows[1..]
-        .iter()
-        .map(|t| task_json(t))
-        .collect();
+    let children: Vec<Value> = rows[1..].iter().map(task_json).collect();
     ok(json!({"root": task_json(root), "children": children}))
 }
 
 pub async fn execute_goal(
     State(state): State<AppState>,
-    _user: AuthUser,
+    user: AuthUser,
     Path(id): Path<String>,
     body: Option<Json<Value>>,
 ) -> ApiResult {
+    // 三审P1：执行他人目标=越权，先验所有权
+    let _ = load_task_for_user(&state, &id, &user).await?;
     let sync = body
         .as_ref()
         .and_then(|b| b.0.get("sync").and_then(|v| v.as_bool()))
@@ -121,6 +142,23 @@ pub async fn execute_goal(
 
 // ---------- 任务 ----------
 
+/// 三审P1：统一任务所有权闸门——ADMIN全权，普通用户仅限自己创建的任务
+async fn load_task_for_user(
+    state: &AppState,
+    id: &str,
+    user: &crate::auth::AuthUser,
+) -> Result<Task, AppError> {
+    let t: Task = sqlx::query_as("SELECT * FROM tasks WHERE id=$1")
+        .bind(id)
+        .fetch_optional(state.pool())
+        .await?
+        .ok_or_else(|| AppError::not_found("任务不存在"))?;
+    if user.0.role != "ADMIN" && t.created_by.as_deref() != Some(user.0.username.as_str()) {
+        return Err(AppError::forbidden("只能操作自己创建的任务"));
+    }
+    Ok(t)
+}
+
 fn task_json(t: &Task) -> Value {
     json!({
         "id": t.id, "parent_id": t.parent_id, "root_id": t.root_id, "title": t.title,
@@ -134,12 +172,24 @@ fn task_json(t: &Task) -> Value {
     })
 }
 
-pub async fn list_tasks(State(state): State<AppState>, _user: AuthUser, Query(q): Query<HashMap<String, String>>) -> ApiResult {
+pub async fn list_tasks(
+    State(state): State<AppState>,
+    _user: AuthUser,
+    Query(q): Query<HashMap<String, String>>,
+) -> ApiResult {
     // 二审P2-1：非 ADMIN 只能看到自己创建的任务
     let is_admin = _user.0.role == "ADMIN";
     let owner = _user.0.username.clone();
-    let page: i64 = q.get("page").and_then(|v| v.parse().ok()).unwrap_or(1).clamp(1, 1000);
-    let page_size: i64 = q.get("page_size").and_then(|v| v.parse().ok()).unwrap_or(50).clamp(1, 100);
+    let page: i64 = q
+        .get("page")
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(1)
+        .clamp(1, 1000);
+    let page_size: i64 = q
+        .get("page_size")
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(50)
+        .clamp(1, 100);
     let off = (page - 1) * page_size;
     let rows: Vec<Task> = if let Some(root) = q.get("root_id") {
         sqlx::query_as("SELECT * FROM tasks WHERE root_id=$1 AND ($2 OR created_by=$3) ORDER BY depth, created_at DESC LIMIT 200")
@@ -155,7 +205,11 @@ pub async fn list_tasks(State(state): State<AppState>, _user: AuthUser, Query(q)
     ok(json!({"items": items, "total": items.len()}))
 }
 
-pub async fn get_task(State(state): State<AppState>, user: AuthUser, Path(id): Path<String>) -> ApiResult {
+pub async fn get_task(
+    State(state): State<AppState>,
+    user: AuthUser,
+    Path(id): Path<String>,
+) -> ApiResult {
     let task: Task = sqlx::query_as("SELECT * FROM tasks WHERE id=$1")
         .bind(&id)
         .fetch_optional(state.pool())
@@ -163,7 +217,7 @@ pub async fn get_task(State(state): State<AppState>, user: AuthUser, Path(id): P
         .ok_or_else(|| AppError::not_found("任务不存在"))?;
     // 二审P2-1：非 ADMIN 只能看自己的任务
     if user.0.role != "ADMIN" && task.created_by.as_deref() != Some(user.0.username.as_str()) {
-        return Err(AppError::not_found("任务不存在"));
+        return Err(AppError::not_found("任务不存在")); // 三审P1：非本人任务不可读
     }
     let events: Vec<(String, String, Option<Value>)> =
         sqlx::query_as("SELECT event, created_at::text, payload FROM task_events WHERE task_id=$1 ORDER BY created_at")
@@ -171,11 +225,19 @@ pub async fn get_task(State(state): State<AppState>, user: AuthUser, Path(id): P
             .fetch_all(state.pool())
             .await?;
     let mut tj = task_json(&task);
-    tj["events"] = json!(events.into_iter().map(|(e, at, p)| json!({"event": e, "at": at, "payload": p})).collect::<Vec<_>>());
+    tj["events"] = json!(events
+        .into_iter()
+        .map(|(e, at, p)| json!({"event": e, "at": at, "payload": p}))
+        .collect::<Vec<_>>());
     ok(tj)
 }
 
-pub async fn retry_task(State(state): State<AppState>, user: AuthUser, Path(id): Path<String>) -> ApiResult {
+pub async fn retry_task(
+    State(state): State<AppState>,
+    user: AuthUser,
+    Path(id): Path<String>,
+) -> ApiResult {
+    let task = load_task_for_user(&state, &id, &user).await?; // 三审P1：所有权前置
     let res = sqlx::query("UPDATE tasks SET status='Created', error=NULL, started_at=NULL, finished_at=NULL WHERE id=$1 AND status='Failed'")
         .bind(&id)
         .execute(state.pool())
@@ -183,54 +245,104 @@ pub async fn retry_task(State(state): State<AppState>, user: AuthUser, Path(id):
     if res.rows_affected() == 0 {
         return Err(AppError::conflict("仅 Failed 状态的任务可重试"));
     }
+    let _ = task;
     // 审计#7：重试不再清零预算累计（防无限重试突破预算），并立即执行 + 同步根任务
-    sqlx::query("INSERT INTO task_events (id, task_id, event, payload) VALUES ($1,$2,'Retried',$3)")
-        .bind(crate::auth::new_id())
+    sqlx::query(
+        "INSERT INTO task_events (id, task_id, event, payload) VALUES ($1,$2,'Retried',$3)",
+    )
+    .bind(crate::auth::new_id())
+    .bind(&id)
+    .bind(json!({"by": user.0.username}))
+    .execute(state.pool())
+    .await?;
+    let task: Task = sqlx::query_as("SELECT * FROM tasks WHERE id=$1")
         .bind(&id)
-        .bind(json!({"by": user.0.username}))
-        .execute(state.pool())
+        .fetch_one(state.pool())
         .await?;
-    let task: Task = sqlx::query_as("SELECT * FROM tasks WHERE id=$1").bind(&id).fetch_one(state.pool()).await?;
     // 二审P2-5：审批型任务重试≠已授权——必须重新走审批，绝不直接执行敏感工具
     if task.requires_approval {
         let pending: Option<(String,)> =
-            sqlx::query_as("SELECT id FROM approvals WHERE task_id=$1 AND status='PENDING'").bind(&id).fetch_optional(state.pool()).await?;
+            sqlx::query_as("SELECT id FROM approvals WHERE task_id=$1 AND status='PENDING'")
+                .bind(&id)
+                .fetch_optional(state.pool())
+                .await?;
         if pending.is_none() {
             crate::orchestrator::create_approval(&state, &task, &user.0.username).await?;
         }
-        sqlx::query("UPDATE tasks SET status='Waiting Approval' WHERE id=$1").bind(&id).execute(state.pool()).await?;
+        sqlx::query("UPDATE tasks SET status='Waiting Approval' WHERE id=$1")
+            .bind(&id)
+            .execute(state.pool())
+            .await?;
         if let Some(root) = &task.root_id {
             crate::orchestrator::sync_root_status(&state, root).await?;
         }
-        return ok(json!({"id": id, "status": "Waiting Approval", "note": "审批型任务重试已重新提交审批"}));
+        return ok(
+            json!({"id": id, "status": "Waiting Approval", "note": "审批型任务重试已重新提交审批"}),
+        );
     }
     crate::orchestrator::execute_task(&state, &id, false).await?;
     if let Some(root) = &task.root_id {
         crate::orchestrator::sync_root_status(&state, root).await?;
     }
-    let fresh: Task = sqlx::query_as("SELECT * FROM tasks WHERE id=$1").bind(&id).fetch_one(state.pool()).await?;
+    let fresh: Task = sqlx::query_as("SELECT * FROM tasks WHERE id=$1")
+        .bind(&id)
+        .fetch_one(state.pool())
+        .await?;
     ok(json!({"id": id, "status": fresh.status, "error": fresh.error}))
 }
 
-pub async fn cancel_task(State(state): State<AppState>, _user: AuthUser, Path(id): Path<String>) -> ApiResult {
-    let task: Task = sqlx::query_as("SELECT * FROM tasks WHERE id=$1").bind(&id).fetch_optional(state.pool()).await?
-        .ok_or_else(|| AppError::not_found("任务不存在"))?;
-    let res = sqlx::query("UPDATE tasks SET status='Cancelled', finished_at=now() WHERE id=$1 AND status IN ('Created','Waiting Approval','Planning','Assigned','Running')")
+pub async fn cancel_task(
+    State(state): State<AppState>,
+    user: AuthUser,
+    Path(id): Path<String>,
+) -> ApiResult {
+    let task = load_task_for_user(&state, &id, &user).await?; // 三审P1：所有权前置
+                                                              // 三审P1-C：Running 不能只改状态——进入 CancelRequested 协作取消；其余直接终态
+    let (new_status, was_running) = if task.status == "Running" {
+        ("CancelRequested", true)
+    } else if ["Created", "Waiting Approval", "Planning", "Assigned"]
+        .contains(&task.status.as_str())
+    {
+        ("Cancelled", false)
+    } else {
+        return Err(AppError::conflict(format!(
+            "任务状态 {} 不可取消",
+            task.status
+        )));
+    };
+    let res = sqlx::query("UPDATE tasks SET status=$2, finished_at=CASE WHEN $2='Cancelled' THEN now() ELSE finished_at END WHERE id=$1 AND status=$3")
         .bind(&id)
+        .bind(new_status)
+        .bind(&task.status)
         .execute(state.pool())
         .await?;
     if res.rows_affected() == 0 {
-        return Err(AppError::conflict("任务不在可取消状态"));
+        return Err(AppError::conflict("任务状态已变化，请刷新后重试"));
     }
+    crate::orchestrator::add_task_event(
+        &state,
+        &id,
+        if was_running {
+            "CancelRequested"
+        } else {
+            "Cancelled"
+        },
+        json!({"by": user.0.username, "from": task.status}),
+    )
+    .await;
     if let Some(root) = &task.root_id {
         crate::orchestrator::sync_root_status(&state, root).await?;
     }
-    ok(json!({"id": id, "status": "Cancelled"}))
+    ok(json!({"id": id, "status": new_status}))
 }
 
 // ---------- 审批中心 ----------
 
-pub async fn list_approvals(State(state): State<AppState>, _user: AuthUser, Query(q): Query<HashMap<String, String>>) -> ApiResult {
+pub async fn list_approvals(
+    State(state): State<AppState>,
+    _user: AuthUser,
+    Query(q): Query<HashMap<String, String>>,
+) -> ApiResult {
     let status = q.get("status").cloned().unwrap_or_else(|| "PENDING".into());
     // 审计#2：JOIN 任务携带工具与参数快照，审批人不再盲审
     let is_admin = _user.0.role == "ADMIN";
@@ -257,10 +369,23 @@ pub async fn decide_approval(
     Path(id): Path<String>,
     Json(body): Json<Value>,
 ) -> ApiResult {
-    let decision = body.get("decision").and_then(|v| v.as_str()).ok_or_else(|| AppError::bad_request("缺少 decision"))?;
+    let decision = body
+        .get("decision")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| AppError::bad_request("缺少 decision"))?;
     let note = body.get("note").and_then(|v| v.as_str()).unwrap_or("");
-    let result = orchestrator::decide_approval(&state, &id, decision, &user.0.username, note).await?;
-    audit(state.pool(), &user.0.sub, "approval", "approval", &id, json!({"decision": decision, "note": note})).await;
+    let result =
+        orchestrator::decide_approval(&state, &id, decision, &user.0.username, &user.0.role, note)
+            .await?;
+    audit(
+        state.pool(),
+        &user.0.sub,
+        "approval",
+        "approval",
+        &id,
+        json!({"decision": decision, "note": note}),
+    )
+    .await;
     ok(result)
 }
 
@@ -271,7 +396,10 @@ pub async fn invoke_tool(
     Path(code): Path<String>,
     Json(body): Json<Value>,
 ) -> ApiResult {
-    let perm = crate::tools::TOOL_DEFS.iter().find(|t| t.code == code).map(|t| t.permission_level);
+    let perm = crate::tools::TOOL_DEFS
+        .iter()
+        .find(|t| t.code == code)
+        .map(|t| t.permission_level);
     match perm {
         None => return Err(crate::error::AppError::not_found("未注册的工具")),
         Some("APPROVAL") => {
@@ -282,12 +410,27 @@ pub async fn invoke_tool(
         _ => {}
     }
     // 审计#4：数据库注册表中被停用的工具同样拒绝直调
-    let db_status: Option<(String,)> = sqlx::query_as("SELECT status FROM tools WHERE code=$1").bind(&code).fetch_optional(state.pool()).await?;
+    let db_status: Option<(String,)> = sqlx::query_as("SELECT status FROM tools WHERE code=$1")
+        .bind(&code)
+        .fetch_optional(state.pool())
+        .await?;
     if db_status.map(|(s,)| s != "ACTIVE").unwrap_or(false) {
         return Err(crate::error::AppError::conflict("该工具已在注册表中停用"));
     }
-    let ctx = crate::tools::ToolCtx { state: &state, task_id: "manual-invoke".into(), approved: false };
+    let ctx = crate::tools::ToolCtx {
+        state: &state,
+        task_id: "manual-invoke".into(),
+        approved: false,
+    };
     let value = crate::tools::dispatch(&code, body, &ctx).await?;
-    audit(state.pool(), &user.0.sub, "invoke_tool", "tool", &code, json!({})).await;
+    audit(
+        state.pool(),
+        &user.0.sub,
+        "invoke_tool",
+        "tool",
+        &code,
+        json!({}),
+    )
+    .await;
     ok(value)
 }

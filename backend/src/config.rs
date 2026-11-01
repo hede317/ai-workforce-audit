@@ -72,7 +72,9 @@ impl Config {
     }
 
     pub fn embed_available(&self) -> bool {
-        !self.embed_api_base.is_empty() && !self.embed_api_key.is_empty() && !self.embed_model.is_empty()
+        !self.embed_api_base.is_empty()
+            && !self.embed_api_key.is_empty()
+            && !self.embed_model.is_empty()
     }
 
     pub fn smtp_available(&self) -> bool {

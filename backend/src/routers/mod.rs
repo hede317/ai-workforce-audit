@@ -21,7 +21,10 @@ pub fn build_router(state: AppState) -> Router {
         .route("/api/v1/auth/login", post(core::login))
         .route("/api/v1/auth/me", get(core::me))
         // 业务单元
-        .route("/api/v1/business-units", get(core::list_bus).post(core::create_bu))
+        .route(
+            "/api/v1/business-units",
+            get(core::list_bus).post(core::create_bu),
+        )
         // 审计
         .route("/api/v1/audit", get(core::list_audit))
         // Agent 中心
@@ -32,7 +35,10 @@ pub fn build_router(state: AppState) -> Router {
         // AI Commander
         .route("/api/v1/commander/goals", post(agents::create_goal))
         .route("/api/v1/commander/goals/:id", get(agents::get_goal))
-        .route("/api/v1/commander/goals/:id/execute", post(agents::execute_goal))
+        .route(
+            "/api/v1/commander/goals/:id/execute",
+            post(agents::execute_goal),
+        )
         // 任务
         .route("/api/v1/tasks", get(agents::list_tasks))
         .route("/api/v1/tasks/:id", get(agents::get_task))
@@ -40,32 +46,77 @@ pub fn build_router(state: AppState) -> Router {
         .route("/api/v1/tasks/:id/cancel", post(agents::cancel_task))
         // 审批
         .route("/api/v1/approvals", get(agents::list_approvals))
-        .route("/api/v1/approvals/:id/decide", post(agents::decide_approval))
+        .route(
+            "/api/v1/approvals/:id/decide",
+            post(agents::decide_approval),
+        )
         // 内容
-        .route("/api/v1/topics", get(business::list_topics).post(business::create_topic))
-        .route("/api/v1/contents", get(business::list_contents).post(business::create_content))
+        .route(
+            "/api/v1/topics",
+            get(business::list_topics).post(business::create_topic),
+        )
+        .route(
+            "/api/v1/contents",
+            get(business::list_contents).post(business::create_content),
+        )
         .route("/api/v1/contents/:id", get(business::get_content))
-        .route("/api/v1/contents/:id/approve", post(business::approve_content))
-        .route("/api/v1/contents/:id/publish", post(business::publish_content))
+        .route(
+            "/api/v1/contents/:id/approve",
+            post(business::approve_content),
+        )
+        .route(
+            "/api/v1/contents/:id/publish",
+            post(business::publish_content),
+        )
         // 线索
-        .route("/api/v1/leads", get(business::list_leads).post(business::create_lead))
+        .route(
+            "/api/v1/leads",
+            get(business::list_leads).post(business::create_lead),
+        )
         // 舆情雷达
         .route("/api/v1/botarmy", get(botarmy::list_bots))
-        .route("/api/v1/listening/keywords", get(listening::list_keywords).post(listening::add_keyword))
-        .route("/api/v1/listening/keywords/:id", axum::routing::delete(listening::delete_keyword))
+        .route(
+            "/api/v1/listening/keywords",
+            get(listening::list_keywords).post(listening::add_keyword),
+        )
+        .route(
+            "/api/v1/listening/keywords/:id",
+            axum::routing::delete(listening::delete_keyword),
+        )
         .route("/api/v1/listening/signals", get(listening::list_signals))
-        .route("/api/v1/listening/signals/:id/to-topic", post(listening::signal_to_topic))
-        .route("/api/v1/listening/signals/:id/to-lead", post(listening::signal_to_lead))
-        .route("/api/v1/leads/:id/events", get(business::list_lead_events).post(business::add_lead_event))
+        .route(
+            "/api/v1/listening/signals/:id/to-topic",
+            post(listening::signal_to_topic),
+        )
+        .route(
+            "/api/v1/listening/signals/:id/to-lead",
+            post(listening::signal_to_lead),
+        )
+        .route(
+            "/api/v1/leads/:id/events",
+            get(business::list_lead_events).post(business::add_lead_event),
+        )
         // 活动
-        .route("/api/v1/campaigns", get(business::list_campaigns).post(business::create_campaign))
+        .route(
+            "/api/v1/campaigns",
+            get(business::list_campaigns).post(business::create_campaign),
+        )
         // 发布中心
-        .route("/api/v1/products", get(business::list_products).post(business::create_product))
+        .route(
+            "/api/v1/products",
+            get(business::list_products).post(business::create_product),
+        )
         .route("/api/v1/products/:id", put(business::update_product))
         .route("/api/v1/publishing", get(business::list_publishing))
-        .route("/api/v1/publishing/:id/result", post(business::record_publishing_result))
+        .route(
+            "/api/v1/publishing/:id/result",
+            post(business::record_publishing_result),
+        )
         // 记忆
-        .route("/api/v1/memories", get(data::list_memories).post(data::create_memory))
+        .route(
+            "/api/v1/memories",
+            get(data::list_memories).post(data::create_memory),
+        )
         .route("/api/v1/memories/:id", put(data::update_memory))
         // 分析与工作流
         .route("/api/v1/analytics/summary", get(data::analytics_summary))
@@ -73,8 +124,14 @@ pub fn build_router(state: AppState) -> Router {
         .route("/api/v1/workflows/trigger", post(data::trigger_workflow))
         .route("/api/v1/workflows/executions", get(data::list_executions))
         .layer(axum::middleware::from_fn(request_id_mw))
-        .layer(axum::middleware::from_fn_with_state(state.clone(), token_renewal_mw))
-        .layer(axum::middleware::from_fn_with_state(state.clone(), idempotency_mw))
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            token_renewal_mw,
+        ))
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            idempotency_mw,
+        ))
         .with_state(state)
 }
 
@@ -114,17 +171,23 @@ async fn idempotency_mw(State(state): State<AppState>, req: Request, next: Next)
             match claim {
                 Ok(res) if res.rows_affected() == 0 => {
                     // 已被抢占：有结果回放结果，无结果=处理中
-                    let existing: Option<(Option<serde_json::Value>,)> =
-                        sqlx::query_as("SELECT response FROM idempotency_keys WHERE endpoint=$1 AND idem_key=$2")
-                            .bind(&endpoint)
-                            .bind(&key)
-                            .fetch_optional(state.pool())
-                            .await
-                            .ok()
-                            .flatten();
+                    let existing: Option<(Option<serde_json::Value>,)> = sqlx::query_as(
+                        "SELECT response FROM idempotency_keys WHERE endpoint=$1 AND idem_key=$2",
+                    )
+                    .bind(&endpoint)
+                    .bind(&key)
+                    .fetch_optional(state.pool())
+                    .await
+                    .ok()
+                    .flatten();
                     return match existing {
-                        Some((Some(body),)) => (axum::http::StatusCode::OK, axum::Json(body)).into_response(),
-                        _ => crate::error::AppError::conflict("相同幂等键的请求正在处理中，请稍后重试").into_response(),
+                        Some((Some(body),)) => {
+                            (axum::http::StatusCode::OK, axum::Json(body)).into_response()
+                        }
+                        _ => crate::error::AppError::conflict(
+                            "相同幂等键的请求正在处理中，请稍后重试",
+                        )
+                        .into_response(),
                     };
                 }
                 Err(_) => return next.run(req).await, // 抢占本身失败时不拦截业务
@@ -133,23 +196,28 @@ async fn idempotency_mw(State(state): State<AppState>, req: Request, next: Next)
             // 2. 执行业务
             let res = next.run(req).await;
             let (parts, body) = res.into_parts();
-            let bytes = axum::body::to_bytes(body, 8_000_000).await.unwrap_or_default();
+            let bytes = axum::body::to_bytes(body, 8_000_000)
+                .await
+                .unwrap_or_default();
             // 3. 仅 2xx 持久化；失败删除占位，客户端可携带同键重试
             if parts.status.is_success() {
                 if let Ok(value) = serde_json::from_slice::<serde_json::Value>(&bytes) {
-                    let _ = sqlx::query("UPDATE idempotency_keys SET response=$3 WHERE endpoint=$1 AND idem_key=$2")
-                        .bind(&endpoint)
-                        .bind(&key)
-                        .bind(&value)
-                        .execute(state.pool())
-                        .await;
-                }
-            } else {
-                let _ = sqlx::query("DELETE FROM idempotency_keys WHERE endpoint=$1 AND idem_key=$2")
+                    let _ = sqlx::query(
+                        "UPDATE idempotency_keys SET response=$3 WHERE endpoint=$1 AND idem_key=$2",
+                    )
                     .bind(&endpoint)
                     .bind(&key)
+                    .bind(&value)
                     .execute(state.pool())
                     .await;
+                }
+            } else {
+                let _ =
+                    sqlx::query("DELETE FROM idempotency_keys WHERE endpoint=$1 AND idem_key=$2")
+                        .bind(&endpoint)
+                        .bind(&key)
+                        .execute(state.pool())
+                        .await;
             }
             Response::from_parts(parts, Body::from(bytes))
         }
@@ -179,7 +247,13 @@ async fn token_renewal_mw(State(state): State<AppState>, req: Request, next: Nex
         if let Ok(claims) = crate::auth::decode_jwt(&state.0.cfg.jwt_secret, &token) {
             let remain = claims.exp - chrono::Utc::now().timestamp();
             if remain > 0 && remain < 6 * 3600 {
-                if let Ok(new_tok) = crate::auth::create_jwt(&state.0.cfg.jwt_secret, &claims.sub, &claims.username, &claims.role, &claims.pv) {
+                if let Ok(new_tok) = crate::auth::create_jwt(
+                    &state.0.cfg.jwt_secret,
+                    &claims.sub,
+                    &claims.username,
+                    &claims.role,
+                    &claims.pv,
+                ) {
                     let mut res = res;
                     if let Ok(v) = axum::http::HeaderValue::from_str(&new_tok) {
                         res.headers_mut().insert("X-Renewed-Token", v);

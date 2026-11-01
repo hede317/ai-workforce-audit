@@ -7,7 +7,8 @@ use serde_json::json;
 /// DSH BOT 军团岗位清单（技能真源 ~/.agents/skills/army-*）
 pub async fn list_bots(State(state): State<AppState>, _user: AuthUser) -> ApiResult {
     let _ = &state;
-    let dir = std::path::Path::new(&std::env::var("HOME").unwrap_or_default()).join(".agents/skills");
+    let dir =
+        std::path::Path::new(&std::env::var("HOME").unwrap_or_default()).join(".agents/skills");
     let mut items = Vec::new();
     if let Ok(entries) = std::fs::read_dir(&dir) {
         for e in entries.flatten() {
@@ -33,6 +34,11 @@ pub async fn list_bots(State(state): State<AppState>, _user: AuthUser) -> ApiRes
             }
         }
     }
-    items.sort_by(|a, b| a["bot"].as_str().unwrap_or("").cmp(b["bot"].as_str().unwrap_or("")));
+    items.sort_by(|a, b| {
+        a["bot"]
+            .as_str()
+            .unwrap_or("")
+            .cmp(b["bot"].as_str().unwrap_or(""))
+    });
     ok(json!({"items": items, "total": items.len()}))
 }

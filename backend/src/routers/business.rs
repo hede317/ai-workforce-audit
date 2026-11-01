@@ -1,5 +1,5 @@
-use crate::auth::{audit, AuthUser, new_id};
-use crate::error::{ok, AppError, ApiResult};
+use crate::auth::{audit, new_id, AuthUser};
+use crate::error::{ok, ApiResult, AppError};
 use crate::state::AppState;
 use axum::extract::{Path, Query, State};
 use axum::Json;
@@ -8,7 +8,11 @@ use std::collections::HashMap;
 
 // ---------- 选题 ----------
 
-pub async fn list_topics(State(state): State<AppState>, _user: AuthUser, Query(q): Query<HashMap<String, String>>) -> ApiResult {
+pub async fn list_topics(
+    State(state): State<AppState>,
+    _user: AuthUser,
+    Query(q): Query<HashMap<String, String>>,
+) -> ApiResult {
     // 审计#17：过滤条件下推 SQL，避免假空
     let rows: Vec<(String, Option<String>, String, Option<Value>, Option<String>, String, i32, String)> =
         sqlx::query_as("SELECT id, business_unit_code, title, keywords, audience, language, priority, status FROM content_topics WHERE ($1::text IS NULL OR business_unit_code=$1) AND ($2::text IS NULL OR status=$2) ORDER BY created_at DESC LIMIT $3 OFFSET $4")
@@ -27,8 +31,15 @@ pub async fn list_topics(State(state): State<AppState>, _user: AuthUser, Query(q
     ok(json!({"items": items, "total": items.len()}))
 }
 
-pub async fn create_topic(State(state): State<AppState>, user: AuthUser, Json(body): Json<Value>) -> ApiResult {
-    let title = body.get("title").and_then(|v| v.as_str()).ok_or_else(|| AppError::bad_request("缺少 title"))?;
+pub async fn create_topic(
+    State(state): State<AppState>,
+    user: AuthUser,
+    Json(body): Json<Value>,
+) -> ApiResult {
+    let title = body
+        .get("title")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| AppError::bad_request("缺少 title"))?;
     let id = new_id();
     sqlx::query("INSERT INTO content_topics (id, business_unit_code, title, keywords, audience, market, language, priority, status) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'NEW')")
         .bind(&id)
@@ -41,7 +52,15 @@ pub async fn create_topic(State(state): State<AppState>, user: AuthUser, Json(bo
         .bind(body.get("priority").and_then(|v| v.as_i64()).unwrap_or(5) as i32)
         .execute(state.pool())
         .await?;
-    audit(state.pool(), &user.0.sub, "create", "content_topic", &id, json!({})).await;
+    audit(
+        state.pool(),
+        &user.0.sub,
+        "create",
+        "content_topic",
+        &id,
+        json!({}),
+    )
+    .await;
     ok(json!({"id": id, "status": "NEW"}))
 }
 
@@ -61,9 +80,19 @@ pub async fn list_contents(State(state): State<AppState>, _user: AuthUser) -> Ap
     ok(json!({"items": items, "total": items.len()}))
 }
 
-pub async fn create_content(State(state): State<AppState>, user: AuthUser, Json(body): Json<Value>) -> ApiResult {
-    let title = body.get("title").and_then(|v| v.as_str()).ok_or_else(|| AppError::bad_request("缺少 title"))?;
-    let body_text = body.get("body").and_then(|v| v.as_str()).unwrap_or_default();
+pub async fn create_content(
+    State(state): State<AppState>,
+    user: AuthUser,
+    Json(body): Json<Value>,
+) -> ApiResult {
+    let title = body
+        .get("title")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| AppError::bad_request("缺少 title"))?;
+    let body_text = body
+        .get("body")
+        .and_then(|v| v.as_str())
+        .unwrap_or_default();
     let id = new_id();
     sqlx::query("INSERT INTO content_assets (id, topic_id, business_unit_code, content_type, title, body, language, status) VALUES ($1,$2,$3,$4,$5,$6,$7,'DRAFT')")
         .bind(&id)
@@ -75,11 +104,23 @@ pub async fn create_content(State(state): State<AppState>, user: AuthUser, Json(
         .bind(body.get("language").and_then(|v| v.as_str()).unwrap_or("zh"))
         .execute(state.pool())
         .await?;
-    audit(state.pool(), &user.0.sub, "create", "content_asset", &id, json!({})).await;
+    audit(
+        state.pool(),
+        &user.0.sub,
+        "create",
+        "content_asset",
+        &id,
+        json!({}),
+    )
+    .await;
     ok(json!({"id": id, "status": "DRAFT"}))
 }
 
-pub async fn approve_content(State(state): State<AppState>, user: crate::auth::EditorUser, Path(id): Path<String>) -> ApiResult {
+pub async fn approve_content(
+    State(state): State<AppState>,
+    user: crate::auth::EditorUser,
+    Path(id): Path<String>,
+) -> ApiResult {
     let res = sqlx::query("UPDATE content_assets SET status='APPROVED' WHERE id=$1 AND status IN ('DRAFT','IN_REVIEW')")
         .bind(&id)
         .execute(state.pool())
@@ -87,7 +128,15 @@ pub async fn approve_content(State(state): State<AppState>, user: crate::auth::E
     if res.rows_affected() == 0 {
         return Err(AppError::conflict("内容不在待审状态"));
     }
-    audit(state.pool(), &user.0.sub, "approve", "content_asset", &id, json!({})).await;
+    audit(
+        state.pool(),
+        &user.0.sub,
+        "approve",
+        "content_asset",
+        &id,
+        json!({}),
+    )
+    .await;
     ok(json!({"id": id, "status": "APPROVED"}))
 }
 
@@ -105,9 +154,14 @@ pub async fn publish_content(
             .await?;
     let (title, status, _seo) = row.ok_or_else(|| AppError::not_found("内容不存在"))?;
     if status != "APPROVED" {
-        return Err(AppError::conflict("内容未审批，禁止发布（红线：所有公开内容必须人工审批）"));
+        return Err(AppError::conflict(
+            "内容未审批，禁止发布（红线：所有公开内容必须人工审批）",
+        ));
     }
-    let platform = body.get("platform").and_then(|v| v.as_str()).unwrap_or("website");
+    let platform = body
+        .get("platform")
+        .and_then(|v| v.as_str())
+        .unwrap_or("website");
     // 审计红线2补强：同一内容存在进行中的发布任务时禁止重复生成
     let dup: Option<(String,)> =
         sqlx::query_as("SELECT id FROM publishing_tasks WHERE content_asset_id=$1 AND status IN ('HUMAN_QUEUE','DRAFT','SCHEDULED','PUBLISHING') LIMIT 1")
@@ -115,7 +169,9 @@ pub async fn publish_content(
             .fetch_optional(state.pool())
             .await?;
     if dup.is_some() {
-        return Err(AppError::conflict("该内容已有进行中的发布任务，请先完成或取消再新建"));
+        return Err(AppError::conflict(
+            "该内容已有进行中的发布任务，请先完成或取消再新建",
+        ));
     }
     let pt_id = new_id();
     let payload = json!({"title": title, "content_asset_id": id, "requested_by": user.0.username, "mode": "human_upload", "checklist": ["核对账号授权", "AI内容标注", "发布后回填链接到 publishing_results"]});
@@ -126,13 +182,25 @@ pub async fn publish_content(
         .bind(&payload)
         .execute(state.pool())
         .await?;
-    audit(state.pool(), &user.0.sub, "publish", "publishing_task", &pt_id, json!({"platform": platform})).await;
+    audit(
+        state.pool(),
+        &user.0.sub,
+        "publish",
+        "publishing_task",
+        &pt_id,
+        json!({"platform": platform}),
+    )
+    .await;
     ok(json!({"publishing_task_id": pt_id, "platform": platform, "status": "HUMAN_QUEUE"}))
 }
 
 // ---------- 线索 CRM ----------
 
-pub async fn list_leads(State(state): State<AppState>, _user: AuthUser, Query(q): Query<HashMap<String, String>>) -> ApiResult {
+pub async fn list_leads(
+    State(state): State<AppState>,
+    _user: AuthUser,
+    Query(q): Query<HashMap<String, String>>,
+) -> ApiResult {
     let rows: Vec<(String, Option<String>, Option<String>, Option<String>, Option<String>, Option<String>, String, String)> =
         sqlx::query_as("SELECT id, business_unit_code, name, email, source_channel, country, lead_status, consent_status FROM leads WHERE ($1::text IS NULL OR business_unit_code=$1) AND ($2::text IS NULL OR lead_status=$2) ORDER BY created_at DESC LIMIT $3 OFFSET $4")
             .bind(q.get("business_unit_code"))
@@ -150,10 +218,22 @@ pub async fn list_leads(State(state): State<AppState>, _user: AuthUser, Query(q)
     ok(json!({"items": items, "total": items.len()}))
 }
 
-pub async fn create_lead(State(state): State<AppState>, _user: AuthUser, Json(body): Json<Value>) -> ApiResult {
-    let email = body.get("email").and_then(|v| v.as_str()).map(|e| e.trim().to_lowercase()).filter(|e| !e.is_empty());
+pub async fn create_lead(
+    State(state): State<AppState>,
+    _user: AuthUser,
+    Json(body): Json<Value>,
+) -> ApiResult {
+    let email = body
+        .get("email")
+        .and_then(|v| v.as_str())
+        .map(|e| e.trim().to_lowercase())
+        .filter(|e| !e.is_empty());
     if let Some(e) = &email {
-        let dup: Option<(String,)> = sqlx::query_as("SELECT id FROM leads WHERE lower(btrim(email))=$1").bind(e).fetch_optional(state.pool()).await?;
+        let dup: Option<(String,)> =
+            sqlx::query_as("SELECT id FROM leads WHERE lower(btrim(email))=$1")
+                .bind(e)
+                .fetch_optional(state.pool())
+                .await?;
         if dup.is_some() {
             return Err(AppError::conflict("该邮箱线索已存在"));
         }
@@ -173,16 +253,26 @@ pub async fn create_lead(State(state): State<AppState>, _user: AuthUser, Json(bo
         .bind(body.get("metadata").cloned())
         .execute(state.pool())
         .await?;
-    sqlx::query("INSERT INTO lead_events (id, lead_id, event_type, note) VALUES ($1,$2,'inquiry',$3)")
-        .bind(new_id())
-        .bind(&id)
-        .bind(body.get("summary").and_then(|v| v.as_str()).unwrap_or("表单提交"))
-        .execute(state.pool())
-        .await?;
+    sqlx::query(
+        "INSERT INTO lead_events (id, lead_id, event_type, note) VALUES ($1,$2,'inquiry',$3)",
+    )
+    .bind(new_id())
+    .bind(&id)
+    .bind(
+        body.get("summary")
+            .and_then(|v| v.as_str())
+            .unwrap_or("表单提交"),
+    )
+    .execute(state.pool())
+    .await?;
     ok(json!({"id": id, "lead_status": "NEW"}))
 }
 
-pub async fn list_lead_events(State(state): State<AppState>, _user: AuthUser, Path(id): Path<String>) -> ApiResult {
+pub async fn list_lead_events(
+    State(state): State<AppState>,
+    _user: AuthUser,
+    Path(id): Path<String>,
+) -> ApiResult {
     let rows: Vec<(String, String, Option<String>, String)> =
         sqlx::query_as("SELECT id, event_type, note, created_at::text FROM lead_events WHERE lead_id=$1 ORDER BY created_at")
             .bind(&id)
@@ -195,10 +285,20 @@ pub async fn list_lead_events(State(state): State<AppState>, _user: AuthUser, Pa
     ok(json!({"items": items}))
 }
 
-pub async fn add_lead_event(State(state): State<AppState>, _user: AuthUser, Path(id): Path<String>, Json(body): Json<Value>) -> ApiResult {
-    let event_type = body.get("event_type").and_then(|v| v.as_str()).ok_or_else(|| AppError::bad_request("缺少 event_type"))?;
+pub async fn add_lead_event(
+    State(state): State<AppState>,
+    _user: AuthUser,
+    Path(id): Path<String>,
+    Json(body): Json<Value>,
+) -> ApiResult {
+    let event_type = body
+        .get("event_type")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| AppError::bad_request("缺少 event_type"))?;
     if !["inquiry", "reply", "followup", "complaint", "deal", "lost"].contains(&event_type) {
-        return Err(AppError::bad_request("event_type 必须为 inquiry/reply/followup/complaint/deal/lost"));
+        return Err(AppError::bad_request(
+            "event_type 必须为 inquiry/reply/followup/complaint/deal/lost",
+        ));
     }
     let eid = new_id();
     sqlx::query("INSERT INTO lead_events (id, lead_id, event_type, note) VALUES ($1,$2,$3,$4)")
@@ -209,7 +309,11 @@ pub async fn add_lead_event(State(state): State<AppState>, _user: AuthUser, Path
         .execute(state.pool())
         .await?;
     if let Some(new_status) = body.get("lead_status").and_then(|v| v.as_str()) {
-        sqlx::query("UPDATE leads SET lead_status=$2 WHERE id=$1").bind(&id).bind(new_status).execute(state.pool()).await?;
+        sqlx::query("UPDATE leads SET lead_status=$2 WHERE id=$1")
+            .bind(&id)
+            .bind(new_status)
+            .execute(state.pool())
+            .await?;
     }
     ok(json!({"id": eid}))
 }
@@ -230,8 +334,15 @@ pub async fn list_campaigns(State(state): State<AppState>, _user: AuthUser) -> A
     ok(json!({"items": items, "total": items.len()}))
 }
 
-pub async fn create_campaign(State(state): State<AppState>, user: AuthUser, Json(body): Json<Value>) -> ApiResult {
-    let name = body.get("name").and_then(|v| v.as_str()).ok_or_else(|| AppError::bad_request("缺少 name"))?;
+pub async fn create_campaign(
+    State(state): State<AppState>,
+    user: AuthUser,
+    Json(body): Json<Value>,
+) -> ApiResult {
+    let name = body
+        .get("name")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| AppError::bad_request("缺少 name"))?;
     let id = new_id();
     sqlx::query("INSERT INTO campaigns (id, business_unit_code, name, channel, budget, status, utm) VALUES ($1,$2,$3,$4,$5,$6,$7)")
         .bind(&id)
@@ -243,7 +354,15 @@ pub async fn create_campaign(State(state): State<AppState>, user: AuthUser, Json
         .bind(body.get("utm").cloned())
         .execute(state.pool())
         .await?;
-    audit(state.pool(), &user.0.sub, "create", "campaign", &id, json!({"name": name})).await;
+    audit(
+        state.pool(),
+        &user.0.sub,
+        "create",
+        "campaign",
+        &id,
+        json!({"name": name}),
+    )
+    .await;
     ok(json!({"id": id}))
 }
 
@@ -301,13 +420,25 @@ pub async fn record_publishing_result(
         .bind(&id)
         .execute(state.pool())
         .await?;
-    audit(state.pool(), &user.0.sub, "publish_result", "publishing_task", &id, json!({"url": body.get("published_url")})).await;
+    audit(
+        state.pool(),
+        &user.0.sub,
+        "publish_result",
+        "publishing_task",
+        &id,
+        json!({"url": body.get("published_url")}),
+    )
+    .await;
     ok(json!({"id": rid, "publishing_task_id": id, "status": "PUBLISHED"}))
 }
 
 // ---------- 选品中心（ECOM） ----------
 
-pub async fn list_products(State(state): State<AppState>, _user: AuthUser, Query(q): Query<HashMap<String, String>>) -> ApiResult {
+pub async fn list_products(
+    State(state): State<AppState>,
+    _user: AuthUser,
+    Query(q): Query<HashMap<String, String>>,
+) -> ApiResult {
     let rows: Vec<(String, Option<String>, String, Option<String>, f64, f64, f64, i32, i32, String, Option<String>)> =
         sqlx::query_as("SELECT id, business_unit_code, title, source_url, price, est_cost, est_margin_pct, demand_score, competition_score, status, decision_note FROM product_candidates ORDER BY updated_at DESC LIMIT 200")
             .fetch_all(state.pool())
@@ -324,8 +455,15 @@ pub async fn list_products(State(state): State<AppState>, _user: AuthUser, Query
     ok(json!({"items": items, "total": items.len()}))
 }
 
-pub async fn create_product(State(state): State<AppState>, user: AuthUser, Json(body): Json<Value>) -> ApiResult {
-    let title = body.get("title").and_then(|v| v.as_str()).ok_or_else(|| AppError::bad_request("缺少 title"))?;
+pub async fn create_product(
+    State(state): State<AppState>,
+    user: AuthUser,
+    Json(body): Json<Value>,
+) -> ApiResult {
+    let title = body
+        .get("title")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| AppError::bad_request("缺少 title"))?;
     let id = new_id();
     sqlx::query("INSERT INTO product_candidates (id, business_unit_code, title, source_url, price) VALUES ($1,$2,$3,$4,$5)")
         .bind(&id)
@@ -335,7 +473,15 @@ pub async fn create_product(State(state): State<AppState>, user: AuthUser, Json(
         .bind(body.get("price").and_then(|v| v.as_f64()).unwrap_or(0.0))
         .execute(state.pool())
         .await?;
-    audit(state.pool(), &user.0.sub, "create", "product_candidate", &id, json!({})).await;
+    audit(
+        state.pool(),
+        &user.0.sub,
+        "create",
+        "product_candidate",
+        &id,
+        json!({}),
+    )
+    .await;
     ok(json!({"id": id, "status": "PENDING"}))
 }
 
@@ -354,7 +500,10 @@ pub async fn update_product(
             return Err(AppError::forbidden("商品上架是敏感动作，仅 ADMIN 可执行"));
         }
         // 审计红线4补强：状态机不可跳步
-        let cur: (String,) = sqlx::query_as("SELECT status FROM product_candidates WHERE id=$1").bind(&id).fetch_one(state.pool()).await?;
+        let cur: (String,) = sqlx::query_as("SELECT status FROM product_candidates WHERE id=$1")
+            .bind(&id)
+            .fetch_one(state.pool())
+            .await?;
         let allowed: &[&str] = match cur.0.as_str() {
             "PENDING" => &["ANALYZED", "REJECTED"],
             "ANALYZED" => &["APPROVED", "REJECTED"],
@@ -362,7 +511,10 @@ pub async fn update_product(
             _ => &[],
         };
         if !allowed.contains(&target) {
-            return Err(AppError::conflict(format!("状态机不允许从 {} 跳到 {}（须走 ANALYZED→APPROVED→LISTED）", cur.0, target)));
+            return Err(AppError::conflict(format!(
+                "状态机不允许从 {} 跳到 {}（须走 ANALYZED→APPROVED→LISTED）",
+                cur.0, target
+            )));
         }
     }
     let res = sqlx::query("UPDATE product_candidates SET status=COALESCE($2,status), decision_note=COALESCE($3,decision_note), price=COALESCE($4,price), updated_at=now() WHERE id=$1")
@@ -380,12 +532,19 @@ pub async fn update_product(
 }
 
 /// 内容详情（含正文）
-pub async fn get_content(State(state): State<AppState>, _user: AuthUser, Path(id): Path<String>) -> ApiResult {
+pub async fn get_content(
+    State(state): State<AppState>,
+    _user: AuthUser,
+    Path(id): Path<String>,
+) -> ApiResult {
     let row: Option<(String, Option<String>, Option<String>, String, String, Option<String>, Option<Value>)> =
         sqlx::query_as("SELECT title, content_type, body, language, status, business_unit_code, seo_metadata FROM content_assets WHERE id=$1")
             .bind(&id)
             .fetch_optional(state.pool())
             .await?;
-    let (title, ctype, body_text, lang, status, bu, seo) = row.ok_or_else(|| AppError::not_found("内容不存在"))?;
-    ok(json!({"id": id, "title": title, "content_type": ctype, "body": body_text, "language": lang, "status": status, "business_unit_code": bu, "seo_metadata": seo}))
+    let (title, ctype, body_text, lang, status, bu, seo) =
+        row.ok_or_else(|| AppError::not_found("内容不存在"))?;
+    ok(
+        json!({"id": id, "title": title, "content_type": ctype, "body": body_text, "language": lang, "status": status, "business_unit_code": bu, "seo_metadata": seo}),
+    )
 }

@@ -5,8 +5,17 @@ frontend/.next/
 
 # 环境与数据
 .env
+.env.local
+.env.production
+.env.*.local
 data/
 *.log
+*.pem
+*.key
+*.crt
+*.p12
+secrets/
+om.jar
 
 # 系统杂项
 .DS_Store

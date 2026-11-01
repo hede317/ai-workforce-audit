@@ -22,7 +22,11 @@ pub struct ChatReply {
 }
 
 impl<'a> AiProvider<'a> {
-    pub async fn chat(&self, messages: &[ChatMessage], max_tokens: u64) -> Result<ChatReply, AppError> {
+    pub async fn chat(
+        &self,
+        messages: &[ChatMessage],
+        max_tokens: u64,
+    ) -> Result<ChatReply, AppError> {
         let url = format!("{}/chat/completions", self.base_url.trim_end_matches('/'));
         let body = json!({
             "model": self.model,
@@ -46,7 +50,11 @@ impl<'a> AiProvider<'a> {
         if !status.is_success() {
             return Err(AppError::internal(format!(
                 "AI 网关返回 {status}: {}",
-                payload.get("error").and_then(|e| e.get("message")).and_then(|m| m.as_str()).unwrap_or("未知错误")
+                payload
+                    .get("error")
+                    .and_then(|e| e.get("message"))
+                    .and_then(|m| m.as_str())
+                    .unwrap_or("未知错误")
             )));
         }
         let text = payload["choices"][0]["message"]["content"]
@@ -99,13 +107,20 @@ impl<'a> EmbedClient<'a> {
             .await
             .map_err(|e| AppError::internal(format!("Embedding 服务连接失败: {e}")))?;
         let status = resp.status();
-        let payload: Value = resp.json().await.map_err(|e| AppError::internal(format!("Embedding 返回解析失败: {e}")))?;
+        let payload: Value = resp
+            .json()
+            .await
+            .map_err(|e| AppError::internal(format!("Embedding 返回解析失败: {e}")))?;
         if !status.is_success() {
             return Err(AppError::internal(format!("Embedding 服务返回 {status}")));
         }
         let vec: Vec<f32> = payload["data"][0]["embedding"]
             .as_array()
-            .map(|a| a.iter().filter_map(|v| v.as_f64().map(|f| f as f32)).collect())
+            .map(|a| {
+                a.iter()
+                    .filter_map(|v| v.as_f64().map(|f| f as f32))
+                    .collect()
+            })
             .unwrap_or_default();
         if vec.is_empty() {
             return Err(AppError::internal("Embedding 返回为空"));

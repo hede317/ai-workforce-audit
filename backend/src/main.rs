@@ -24,7 +24,9 @@ async fn main() -> anyhow::Result<()> {
         // 审计#20：连接级统一时区，消除日报跨日撕裂
         .after_connect(|conn, _meta| {
             Box::pin(async move {
-                sqlx::query("SET TIME ZONE 'Asia/Shanghai'").execute(&mut *conn).await?;
+                sqlx::query("SET TIME ZONE 'Asia/Shanghai'")
+                    .execute(&mut *conn)
+                    .await?;
                 Ok(())
             })
         })

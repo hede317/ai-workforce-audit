@@ -22,10 +22,30 @@ pub async fn run(pool: &PgPool, cfg: &Config) -> Result<(), anyhow::Error> {
 
     // 业务单元（V2.0 规范第七章：培训/电商/留学/企业服务）
     let bus = [
-        ("EDU", "国际职业培训", "https://learn.hedeyou.com", "AI职业技能培训与中文职场培训"),
-        ("ECOM", "跨境电商", "https://shop.hedeyou.com", "跨境选品与独立站销售"),
-        ("STUDY", "留学服务", "https://study.hedeyou.com", "留学评估与申请服务"),
-        ("ERP", "企业数字化服务", "https://erp.hedeyou.com", "ERP实施、AI提效与企业数字化咨询"),
+        (
+            "EDU",
+            "国际职业培训",
+            "https://learn.hedeyou.com",
+            "AI职业技能培训与中文职场培训",
+        ),
+        (
+            "ECOM",
+            "跨境电商",
+            "https://shop.hedeyou.com",
+            "跨境选品与独立站销售",
+        ),
+        (
+            "STUDY",
+            "留学服务",
+            "https://study.hedeyou.com",
+            "留学评估与申请服务",
+        ),
+        (
+            "ERP",
+            "企业数字化服务",
+            "https://erp.hedeyou.com",
+            "ERP实施、AI提效与企业数字化咨询",
+        ),
     ];
     for (code, name, website, desc) in bus {
         sqlx::query("INSERT INTO business_units (id, code, name, website, description) VALUES ($1,$2,$3,$4,$5) ON CONFLICT (code) DO NOTHING")
@@ -68,10 +88,16 @@ pub async fn run(pool: &PgPool, cfg: &Config) -> Result<(), anyhow::Error> {
     }
 
     // 舆情雷达示例关键词（首次落库，用户可删改）
-    let kw_count: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM listening_keywords").fetch_one(pool).await?;
+    let kw_count: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM listening_keywords")
+        .fetch_one(pool)
+        .await?;
     if kw_count.0 == 0 {
         let kws = [
-            ("ERP", "巴基斯坦中国企业IT/信息化外派机会", "巴基斯坦 ERP 招聘"),
+            (
+                "ERP",
+                "巴基斯坦中国企业IT/信息化外派机会",
+                "巴基斯坦 ERP 招聘",
+            ),
             ("ERP", "刚果金矿业信息化", "矿业 信息化 招标"),
             ("EDU", "AI技能培训招生", "AI 培训 企业员工"),
             ("ECOM", "跨境电商选品趋势", "TikTok 带货 爆品"),
@@ -83,18 +109,25 @@ pub async fn run(pool: &PgPool, cfg: &Config) -> Result<(), anyhow::Error> {
     }
 
     // 管理员（已存在则不动，尊重已改密码）
-    let exists: Option<(String,)> = sqlx::query_as("SELECT id FROM users WHERE username=$1").bind(&cfg.admin_username).fetch_optional(pool).await?;
+    let exists: Option<(String,)> = sqlx::query_as("SELECT id FROM users WHERE username=$1")
+        .bind(&cfg.admin_username)
+        .fetch_optional(pool)
+        .await?;
     if exists.is_none() {
-        sqlx::query("INSERT INTO users (id, username, password_hash, role) VALUES ($1,$2,$3,'ADMIN')")
-            .bind(new_id())
-            .bind(&cfg.admin_username)
-            .bind(hash_password(&cfg.admin_password)?)
-            .execute(pool)
-            .await?;
+        sqlx::query(
+            "INSERT INTO users (id, username, password_hash, role) VALUES ($1,$2,$3,'ADMIN')",
+        )
+        .bind(new_id())
+        .bind(&cfg.admin_username)
+        .bind(hash_password(&cfg.admin_password)?)
+        .execute(pool)
+        .await?;
     }
 
     // 初始企业记忆（用户可随时在 Memory Center 修订）
-    let mem_count: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM memories WHERE kind='ENTERPRISE'").fetch_one(pool).await?;
+    let mem_count: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM memories WHERE kind='ENTERPRISE'")
+        .fetch_one(pool)
+        .await?;
     if mem_count.0 == 0 {
         let seed_memories = [
             ("公司介绍", "HedeYou：25年跨界经验的独立顾问经营的AI与数字化服务品牌，覆盖企业数字化（ERP/FDE实施）、AI职业技能培训、留学服务、跨境电商四大业务。"),

@@ -1,0 +1,64 @@
+name: CI
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  backend:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: ai_workforce
+          POSTGRES_PASSWORD: ai_workforce
+          POSTGRES_DB: ai_workforce
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U ai_workforce"
+          --health-interval 5s --health-timeout 3s --health-retries 10
+    env:
+      TEST_DATABASE_URL: postgres://ai_workforce:ai_workforce@127.0.0.1:5432/ai_workforce_test
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: 格式检查
+        run: cargo fmt --check
+      - name: Clippy（零警告门槛）
+        run: cargo clippy --all-targets -- -D warnings
+      - name: 集成测试（自动建测试库）
+        run: cargo test
+      - name: 测试数量
+        run: cargo test 2>&1 | grep "test result" | grep -v " 0 passed" || true
+
+  frontend:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - run: npm install --registry=https://registry.npmjs.org --no-audit --no-fund
+      - run: npm run build
+
+  secrets-scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: 敏感信息扫描（真实密钥特征）
+        run: |
+          ! git grep -nEi 'sk-[a-zA-Z0-9]{20,}|ghp_[A-Za-z0-9]{30,}|AKID[A-Za-z0-9]{10,}' -- . | grep -vE 'example|YOUR|placeholder'

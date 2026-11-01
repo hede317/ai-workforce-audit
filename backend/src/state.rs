@@ -37,7 +37,14 @@ impl AppState {
             .user_agent("HedeYou-AI-Workforce/0.1")
             .cookie_store(true)
             .build()?;
-        Ok(Self(Arc::new(Inner { cfg, pool, http, http_no_redirect, http_long, http_cookies })))
+        Ok(Self(Arc::new(Inner {
+            cfg,
+            pool,
+            http,
+            http_no_redirect,
+            http_long,
+            http_cookies,
+        })))
     }
 
     pub fn pool(&self) -> &PgPool {
