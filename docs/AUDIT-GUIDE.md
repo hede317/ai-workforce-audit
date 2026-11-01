@@ -77,3 +77,15 @@ cd frontend && npm install && npm run build && npm run start   # :8610
 | CI | GitHub Actions: fmt/clippy(-D warnings)/test(pg服务)/前端build/密钥扫描 | .github/workflows/ci.yml |
 
 审计意见驳回记录：globals.css "8 px"（实为 8px，系旧版本误读）。
+
+---
+
+## 四审任务整改记录（T-001~T-003，branch audit4-hardening，24/24绿）
+
+| 任务 | 处置 | 位置 |
+|---|---|---|
+| T-001 SSRF | 错误码统一400+SSRF_BLOCKED；fetch_one_hop单跳(全IP校验+resolve钉IP+10s)+手动跟随重定向≤3跳逐跳重校验；2MB上限；sitemap入守卫 | tools.rs::fetch_one_hop/fetch_limited |
+| T-002 原子化 | 抢单清单(Created/Assigned)对齐；decide事务内置Assigned、提交后执行；FOR UPDATE+条件更新在位 | orchestrator.rs |
+| T-003 预算 | usage_ledger(0007)+call_ai前置日预算闸门(429 BUDGET_EXCEEDED)+/api/v1/usage/today+SUM(bigint)::bigint cast | tools.rs/routers/data.rs/migrations/0007 |
+
+新增测试4条：SSRF直击×3(127.0.0.1/169.254.169.254/localhost)、302跳板重定向拦截、并发10批准仅1胜(Running事件=1)、日预算闸门(429)。
