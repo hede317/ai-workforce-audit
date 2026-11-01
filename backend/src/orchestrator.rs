@@ -1,9 +1,9 @@
-use crate::ai::{extract_json, AiProvider, ChatMessage};
+use crate::ai::{extract_json, gated_chat, record_usage};
 use crate::auth::new_id;
 use crate::error::AppError;
 use crate::models::{Agent, Task};
 use crate::state::AppState;
-use crate::tools::{dispatch, is_valid_tool, record_usage, usage_today, ToolCtx};
+use crate::tools::{call_ai, dispatch, is_valid_tool, ToolCtx};
 use serde_json::{json, Value};
 use std::time::Duration;
 
@@ -127,28 +127,6 @@ async fn ai_plan(
     bu_codes: &[String],
     agents: &[Agent],
 ) -> Result<(Vec<PlannedSubtask>, Option<String>), AppError> {
-    // 四审T-003封堵：CEO 拆解直连调用同样过日预算闸门
-    let (used_tokens, used_cost) = usage_today(state).await?;
-    if state.0.cfg.daily_token_limit > 0 && used_tokens >= state.0.cfg.daily_token_limit {
-        return Err(AppError::new(
-            axum::http::StatusCode::TOO_MANY_REQUESTS,
-            "BUDGET_EXCEEDED",
-            format!(
-                "当日 Token 预算已用尽（{}/{}）",
-                used_tokens, state.0.cfg.daily_token_limit
-            ),
-        ));
-    }
-    if state.0.cfg.daily_cost_limit_usd > 0.0 && used_cost >= state.0.cfg.daily_cost_limit_usd {
-        return Err(AppError::new(
-            axum::http::StatusCode::TOO_MANY_REQUESTS,
-            "BUDGET_EXCEEDED",
-            format!(
-                "当日费用预算已用尽（${:.2}/${:.2}）",
-                used_cost, state.0.cfg.daily_cost_limit_usd
-            ),
-        ));
-    }
     let agent_list = agents
         .iter()
         .map(|a| {
@@ -171,31 +149,21 @@ async fn ai_plan(
         })
         .collect::<Vec<_>>()
         .join("\n");
-    let provider = AiProvider {
-        base_url: &state.0.cfg.ai_base_url,
-        api_key: &state.0.cfg.ai_api_key,
-        model: &state.0.cfg.ai_model,
-        http: &state.0.http,
-    };
-    let reply = provider.chat(
-        &[
-            ChatMessage {
-                role: "system".into(),
-                content: "你是老何，HedeYou AI Workforce 的幕僚长，直接对德友（用户）负责。你听到德友的目标后，把它拆解为可执行任务并分配给专业 Agent。只输出 JSON，不要输出其他文字。".into(),
-            },
-            ChatMessage {
-                role: "user".into(),
-                content: format!(
-                    "经营目标：{goal}\n\n可用业务单元：{}\n\n可用Agent：\n{agent_list}\n\n可用工具（tool 字段只能从这里选或留空由Agent自行用AI完成）：\n{tool_list}\n\n拆解为2-6个子任务，输出JSON：\n{{\"business_unit_code\":\"业务单元代码\",\"subtasks\":[{{\"title\":\"任务名\",\"agent_code\":\"agent代码\",\"description\":\"给Agent的具体指令\",\"tool\":\"工具代码或省略\",\"args\":{{}} ,\"requires_approval\":false}}]}}\n规则：对外发布/发邮件/联系客户/改价/创建广告的任务 requires_approval 必须 true。",
-                    bu_codes.join("/")
-                ),
-            },
-        ],
+    // 四审T-006：走统一入口（日预算闸门+台账内聚）
+    let reply = crate::ai::gated_chat(
+        state,
+        None,
+        "你是老何，HedeYou AI Workforce 的幕僚长，直接对德友（用户）负责。你听到德友的目标后，把它拆解为可执行任务并分配给专业 Agent。只输出 JSON，不要输出其他文字。",
+        &format!(
+            "经营目标：{goal}\n\n可用业务单元：{}\n\n可用Agent：\n{agent_list}\n\n可用工具（tool 字段只能从这里选或留空由Agent自行用AI完成）：\n{tool_list}\n\n拆解为2-6个子任务，输出JSON：\n{{\"business_unit_code\":\"业务单元代码\",\"subtasks\":[{{\"title\":\"任务名\",\"agent_code\":\"agent代码\",\"description\":\"给Agent的具体指令\",\"tool\":\"工具代码或省略\",\"args\":{{}},\"requires_approval\":false}}]}}\n规则：对外发布/发邮件/联系客户/改价/创建广告的任务 requires_approval 必须 true。",
+            bu_codes.join("/")
+        ),
         2000,
     )
     .await?;
-    let parsed =
-        extract_json(&reply.text).ok_or_else(|| AppError::internal("CEO 拆解结果不是有效 JSON"))?;
+    let parsed = extract_json(&reply.text).ok_or_else(|| {
+        AppError::internal("CEO 拆解结果不是有效 JSON")
+    })?;
     let bu = parsed
         .get("business_unit_code")
         .and_then(|v| v.as_str())
@@ -216,7 +184,6 @@ async fn ai_plan(
                 .and_then(|v| v.as_str())
                 .filter(|t| is_valid_tool(t))
                 .filter(|t| {
-                    // 审计#1：工具必须在指派 Agent 的白名单内
                     agents
                         .iter()
                         .find(|a| a.code == agent_code)
@@ -250,7 +217,7 @@ async fn ai_plan(
     if out.is_empty() {
         return Err(AppError::internal("CEO 拆解结果为空"));
     }
-    record_usage(state, None, reply.tokens).await;
+    record_usage(state, None, &reply).await;
     Ok((out, bu))
 }
 
@@ -367,34 +334,8 @@ pub async fn create_goal(
 
 // ---------- 执行（状态机 + 预算） ----------
 
+/// T-006：走统一入口（日预算闸门+台账内聚在 gated_chat）
 async fn run_agent_ai(state: &AppState, task: &Task) -> Result<Value, AppError> {
-    if !state.0.cfg.ai_available() {
-        return Err(AppError::not_configured(
-            "AI 模型网关 (AI_BASE_URL/AI_API_KEY/AI_MODEL)",
-        ));
-    }
-    // 四审T-003封堵：Agent 任务直连调用同样过日预算闸门（此前绕过 call_ai）
-    let (used_tokens, used_cost) = usage_today(state).await?;
-    if state.0.cfg.daily_token_limit > 0 && used_tokens >= state.0.cfg.daily_token_limit {
-        return Err(AppError::new(
-            axum::http::StatusCode::TOO_MANY_REQUESTS,
-            "BUDGET_EXCEEDED",
-            format!(
-                "当日 Token 预算已用尽（{}/{}）",
-                used_tokens, state.0.cfg.daily_token_limit
-            ),
-        ));
-    }
-    if state.0.cfg.daily_cost_limit_usd > 0.0 && used_cost >= state.0.cfg.daily_cost_limit_usd {
-        return Err(AppError::new(
-            axum::http::StatusCode::TOO_MANY_REQUESTS,
-            "BUDGET_EXCEEDED",
-            format!(
-                "当日费用预算已用尽（${:.2}/${:.2}）",
-                used_cost, state.0.cfg.daily_cost_limit_usd
-            ),
-        ));
-    }
     let agent: Option<(Option<String>,)> =
         sqlx::query_as("SELECT system_prompt FROM agents WHERE code=$1")
             .bind(task.agent_code.as_deref().unwrap_or("ceo"))
@@ -422,32 +363,16 @@ async fn run_agent_ai(state: &AppState, task: &Task) -> Result<Value, AppError> 
         task.title,
         task.description.as_deref().unwrap_or(""),
     );
-    let provider = AiProvider {
-        base_url: &state.0.cfg.ai_base_url,
-        api_key: &state.0.cfg.ai_api_key,
-        model: &state.0.cfg.ai_model,
-        http: &state.0.http,
-    };
-    let reply = provider
-        .chat(
-            &[
-                ChatMessage {
-                    role: "system".into(),
-                    content: system,
-                },
-                ChatMessage {
-                    role: "user".into(),
-                    content: user,
-                },
-            ],
-            task.max_tokens.max(1) as u64,
-        )
-        .await?;
-    record_usage(state, Some(&task.id), reply.tokens).await;
+    let reply = crate::ai::gated_chat(
+        state,
+        Some(&task.id),
+        &system,
+        &user,
+        task.max_tokens.max(1) as u64,
+    )
+    .await?;
     Ok(json!({"output": reply.text, "tokens": reply.tokens, "mode": "ai"}))
 }
-
-/// 执行单个任务（带预算与超时；APPROVAL_REQUIRED 自动转审批）
 pub async fn execute_task(state: &AppState, task_id: &str, approved: bool) -> Result<(), AppError> {
     let task: Task = sqlx::query_as("SELECT * FROM tasks WHERE id=$1")
         .bind(task_id)

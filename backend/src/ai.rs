@@ -19,6 +19,10 @@ pub struct ChatMessage {
 pub struct ChatReply {
     pub text: String,
     pub tokens: u64,
+    pub model: String,
+    pub prompt_tokens: u64,
+    pub completion_tokens: u64,
+    pub estimated: bool,
 }
 
 impl<'a> AiProvider<'a> {
@@ -61,8 +65,15 @@ impl<'a> AiProvider<'a> {
             .as_str()
             .unwrap_or_default()
             .to_string();
-        let tokens = payload["usage"]["total_tokens"].as_u64().unwrap_or(0);
-        Ok(ChatReply { text, tokens })
+        // T-006：网关未返回 usage 时按字符数估算并标记 estimated
+        let prompt_tokens = payload["usage"]["prompt_tokens"].as_u64();
+        let completion_tokens = payload["usage"]["completion_tokens"].as_u64();
+        let (prompt_tokens, completion_tokens, estimated) = match (prompt_tokens, completion_tokens) {
+            (Some(p), Some(c)) => (p, c, false),
+            _ => ((messages.iter().map(|m| m.content.chars().count()).sum::<usize>() as u64) / 2 + 1, (text.chars().count() as u64) / 2 + 1, true),
+        };
+        let tokens = payload["usage"]["total_tokens"].as_u64().unwrap_or(prompt_tokens + completion_tokens);
+        Ok(ChatReply { text, tokens, model: self.model.to_string(), prompt_tokens, completion_tokens, estimated })
     }
 }
 
@@ -160,4 +171,95 @@ pub fn parse_pgvector(s: &str) -> Vec<f32> {
         .split(',')
         .filter_map(|x| x.trim().parse::<f32>().ok())
         .collect()
+}
+
+
+/// T-006：所有 AI 调用的统一入口——日预算闸门（配置时区当日）+ 调用 + 台账（失败显式记日志）
+pub async fn gated_chat(
+    state: &crate::state::AppState,
+    task_id: Option<&str>,
+    system: &str,
+    user: &str,
+    max_tokens: u64,
+) -> Result<ChatReply, crate::error::AppError> {
+    let tz = &state.0.cfg.ai_timezone;
+    let gate = |what: &str| {
+        crate::error::AppError::new(
+            axum::http::StatusCode::TOO_MANY_REQUESTS,
+            "BUDGET_EXCEEDED",
+            format!("当日{}预算已用尽", what),
+        )
+    };
+    if !state.0.cfg.ai_available() {
+        return Err(crate::error::AppError::not_configured(
+            "AI 模型网关 (AI_BASE_URL/AI_API_KEY/AI_MODEL)",
+        ));
+    }
+    let (used_tokens, used_cost): (i64, f64) = sqlx::query_as(
+        "SELECT COALESCE(SUM(tokens),0)::bigint, COALESCE(SUM(cost_usd),0)::float8 FROM usage_ledger WHERE (created_at AT TIME ZONE $1)::date = (now() AT TIME ZONE $1)::date",
+    )
+    .bind(tz)
+    .fetch_one(state.pool())
+    .await
+    .unwrap_or((0, 0.0)); // 查询失败不阻断，record_usage 侧会显式记日志
+    if state.0.cfg.daily_token_limit > 0 && used_tokens >= state.0.cfg.daily_token_limit {
+        return Err(gate(&format!("Token（{used_tokens}/{}）", state.0.cfg.daily_token_limit)));
+    }
+    if state.0.cfg.daily_cost_limit_usd > 0.0 && used_cost >= state.0.cfg.daily_cost_limit_usd {
+        return Err(gate(&format!("费用（${used_cost:.2}/${:.2}）", state.0.cfg.daily_cost_limit_usd)));
+    }
+    let provider = AiProvider {
+        base_url: &state.0.cfg.ai_base_url,
+        api_key: &state.0.cfg.ai_api_key,
+        model: &state.0.cfg.ai_model,
+        http: &state.0.http,
+    };
+    let reply = provider
+        .chat(
+            &[ChatMessage { role: "system".into(), content: system.into() }, ChatMessage { role: "user".into(), content: user.into() }],
+            max_tokens,
+        )
+        .await?;
+    record_usage(state, task_id, &reply).await;
+    Ok(reply)
+}
+
+/// T-006：台账写入——按模型计价（AI_PRICING_JSON 子串匹配，回退统一费率）；失败显式 log 不静默
+pub async fn record_usage(
+    state: &crate::state::AppState,
+    task_id: Option<&str>,
+    reply: &ChatReply,
+) {
+    if reply.tokens == 0 && reply.estimated {
+        return;
+    }
+    let rate = serde_json::from_str::<Value>(&state.0.cfg.ai_pricing_json)
+        .ok()
+        .and_then(|v| {
+            let model = reply.model.to_lowercase();
+            v.as_object()
+                .and_then(|o| {
+                    o.iter()
+                        .find(|(k, _)| model.contains(&k.to_lowercase()))
+                        .and_then(|(_, v)| v.as_f64())
+                })
+        })
+        .unwrap_or(state.0.cfg.ai_cost_per_1k_usd);
+    let cost = reply.tokens as f64 / 1000.0 * rate;
+    if let Err(e) = sqlx::query(
+        "INSERT INTO usage_ledger (id, task_id, tokens, cost_usd, model, prompt_tokens, completion_tokens, estimated) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)",
+    )
+    .bind(crate::auth::new_id())
+    .bind(task_id)
+    .bind(reply.tokens as i64)
+    .bind(cost)
+    .bind(&reply.model)
+    .bind(reply.prompt_tokens as i64)
+    .bind(reply.completion_tokens as i64)
+    .bind(reply.estimated)
+    .execute(state.pool())
+    .await
+    {
+        tracing::error!("usage_ledger 写入失败（{}tokens, model={}）: {e}", reply.tokens, reply.model);
+    }
 }

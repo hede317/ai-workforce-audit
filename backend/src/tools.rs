@@ -178,7 +178,7 @@ pub(crate) async fn record_usage(state: &AppState, task_id: Option<&str>, tokens
     .await;
 }
 
-async fn call_ai(
+pub(crate) async fn call_ai(
     state: &AppState,
     system: &str,
     user: &str,
@@ -247,24 +247,44 @@ fn is_restricted_ip(ip: &std::net::IpAddr) -> bool {
                 || v4.is_broadcast()
                 || v4.is_multicast()
                 || v4.is_documentation()
-                // 四审T-004：补齐审计指定网段
-                || (v4.octets()[0] == 100 && (v4.octets()[1] & 0xc0) == 64) // 100.64/10 CGNAT（含阿里云元数据 100.100.100.200）
-                || (v4.octets()[0] == 198 && (v4.octets()[1] & 0xfe) == 30) // 198.18/15 基准测试
+                || (v4.octets()[0] == 100 && (v4.octets()[1] & 0xc0) == 64) // 100.64/10 CGNAT
                 || (v4.octets()[0] == 192 && v4.octets()[1] == 0 && v4.octets()[2] == 0) // 192.0.0/24
-                || (v4.octets()[0] & 0xf0) == 240 // 240/4 保留
+                || (v4.octets()[0] == 198 && (v4.octets()[1] & 0xfe) == 18) // 198.18/15
+                || (v4.octets()[0] & 0xf0) == 240 // 240/4
         }
         std::net::IpAddr::V6(v6) => {
-            // 四审T-004：IPv4-mapped IPv6（::ffff:a.b.c.d）先转回 V4 再按 V4 规则判
+            // IPv4-mapped IPv6 先转回 V4 再按 V4 规则判
             if let Some(v4) = v6.to_ipv4_mapped() {
                 return is_restricted_ip(&std::net::IpAddr::V4(v4));
+            }
+            // 6to4 2002::/16 内嵌 V4（紧跟前缀，segments[1..3]）
+            if (v6.segments()[0] & 0xff00) == 0x2000 {
+                let v4 = std::net::IpAddr::V4(std::net::Ipv4Addr::new(
+                    (v6.segments()[1] >> 8) as u8,
+                    (v6.segments()[1] & 0xff) as u8,
+                    (v6.segments()[2] >> 8) as u8,
+                    (v6.segments()[2] & 0xff) as u8,
+                ));
+                return is_restricted_ip(&v4);
+            }
+            // NAT64 64:ff9b::/96 内嵌 V4
+            if v6.segments()[0] == 0x0064
+                && v6.segments()[1] == 0xff9b
+                && v6.segments()[2..6].iter().all(|&s| s == 0)
+            {
+                let v4 = std::net::IpAddr::V4(std::net::Ipv4Addr::new(
+                    (v6.segments()[6] >> 8) as u8,
+                    (v6.segments()[6] & 0xff) as u8,
+                    (v6.segments()[7] >> 8) as u8,
+                    (v6.segments()[7] & 0xff) as u8,
+                ));
+                return is_restricted_ip(&v4);
             }
             v6.is_loopback()
                 || v6.is_unspecified()
                 || v6.is_multicast()
                 || (v6.segments()[0] & 0xfe00) == 0xfc00 // fc00::/7
                 || (v6.segments()[0] & 0xffc0) == 0xfe80 // fe80::/10
-                || (v6.segments()[0] == 0x0064 && v6.segments()[1] == 0xff9b && v6.segments()[2..8].iter().all(|&s| s == 0))
-            // NAT64 64:ff9b::/96
         }
     }
 }
@@ -1324,6 +1344,9 @@ async fn botarmy_dispatch(args: &Value) -> Result<Value, AppError> {
     let bot = take_str(args, "bot").ok_or_else(|| AppError::bad_request("缺少 bot"))?;
     let subject = take_str(args, "subject").ok_or_else(|| AppError::bad_request("缺少 subject"))?;
     let content = take_str(args, "content").ok_or_else(|| AppError::bad_request("缺少 content"))?;
+    if bot.is_empty() || bot.len() > 40 || bot.len() != bot.chars().count() {
+        return Err(AppError::bad_request("bot 名长度 1-40"));
+    }
     if !bot
         .chars()
         .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-' || c == '_')
@@ -1332,7 +1355,7 @@ async fn botarmy_dispatch(args: &Value) -> Result<Value, AppError> {
         return Err(AppError::bad_request("非法 bot 名"));
     }
     // 四审T-005：team 白名单字符校验 + canonicalize 断言，封死路径穿越（../../.ssh 类）
-    if team.contains("..")
+    if team.is_empty() || team.chars().count() > 40 || team.contains("..")
         || team.contains('/')
         || team.contains('\\')
         || !team
@@ -1376,7 +1399,13 @@ async fn botarmy_dispatch(args: &Value) -> Result<Value, AppError> {
         content,
         if returns_dir.is_dir() { "回报/ 目录" } else { "团队目录" }
     );
-    std::fs::write(&file, doc).map_err(|e| AppError::internal(format!("工单写入失败: {e}")))?;
+    use std::io::Write;
+    let mut f = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&file)
+        .map_err(|e| AppError::conflict(format!("文件已存在或无法创建: {e}")))?;
+    f.write_all(doc.as_bytes()).map_err(|e| AppError::internal(format!("写入失败: {e}")))?;
     Ok(
         json!({"output": format!("工单已投递：{}（岗位 {}）", file.display(), bot), "ticket": file.display().to_string(), "mode": "dispatched"}),
     )
@@ -1597,4 +1626,36 @@ async fn director_review(
     let parsed = crate::ai::extract_json(&reply.text).unwrap_or(json!({}));
     record_usage(state, Some(ctx.task_id.as_str()), reply.tokens).await;
     Ok(json!({"output": "复盘评分已生成", "score": parsed, "mode": "ai"}))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_restricted_ip;
+
+    #[test]
+    fn test_is_restricted_ip_table() {
+        let blocked: Vec<std::net::IpAddr> = [
+            "::ffff:127.0.0.1",     // IPv4-mapped loopback
+            "::ffff:7f00:1",        // IPv4-mapped loopback (hex)
+            "100.100.100.200",      // CGNAT (阿里云元数据)
+            "100.64.0.1",           // CGNAT 起点
+            "198.18.0.1",           // 基准测试
+            "64:ff9b::7f00:1",      // NAT64 内嵌 127.0.0.1
+            "2002:7f00:1::1",       // 6to4 内嵌 127.0.0.1
+            "127.0.0.1",            // loopback
+            "10.0.0.1",             // private
+            "192.168.1.1",          // private
+            "169.254.169.254",      // link-local (云元数据)
+        ].iter().map(|s| s.parse().unwrap()).collect();
+        for ip in &blocked {
+            assert!(is_restricted_ip(ip), "应拦截: {ip}");
+        }
+        let allowed: Vec<std::net::IpAddr> = [
+            "8.8.8.8",
+            "2606:4700:4700::1111", // Cloudflare 公共 IPv6
+        ].iter().map(|s| s.parse().unwrap()).collect();
+        for ip in &allowed {
+            assert!(!is_restricted_ip(ip), "不应拦截公网地址: {ip}");
+        }
+    }
 }

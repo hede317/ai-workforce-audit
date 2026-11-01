@@ -30,6 +30,10 @@ pub struct Config {
     pub daily_token_limit: i64,
     pub daily_cost_limit_usd: f64,
     pub ai_cost_per_1k_usd: f64,
+    pub ai_pricing_json: String,
+    pub ai_timezone: String,
+    pub feature_botarmy: bool,
+    pub feature_openmaic: bool,
 }
 
 fn envs(key: &str, default: &str) -> String {
@@ -70,6 +74,10 @@ impl Config {
             daily_token_limit: envs("DAILY_TOKEN_LIMIT", "0").parse().unwrap_or(0), // 0=不限
             daily_cost_limit_usd: envs("DAILY_COST_LIMIT_USD", "0").parse().unwrap_or(0.0),
             ai_cost_per_1k_usd: envs("AI_COST_PER_1K_USD", "0").parse().unwrap_or(0.0),
+            ai_pricing_json: envs("AI_PRICING_JSON", "{}"),
+            ai_timezone: envs("AWF_TIMEZONE", "Asia/Shanghai"),
+            feature_botarmy: envs("FEATURE_BOTARMY", "0") == "1",
+            feature_openmaic: envs("FEATURE_OPENMAIC", "0") == "1",
         }
     }
 
