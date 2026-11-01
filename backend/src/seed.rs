@@ -6,8 +6,14 @@ use sqlx::PgPool;
 
 /// 幂等种子：工具注册表 / 12个专业Agent / 4个业务单元 / 管理员 / 初始企业记忆
 pub async fn run(pool: &PgPool, cfg: &Config) -> Result<(), anyhow::Error> {
-    // 工具注册表
+    // 工具注册表（openmaic.classroom 默认停用：长任务+第三方公开API，按需启用）
+    let openmaic_enabled = std::env::var("OPENMAIC_ENABLED").as_deref() == Ok("1");
     for t in TOOL_DEFS {
+        let status = if t.code == "openmaic.classroom" && !openmaic_enabled {
+            "DISABLED"
+        } else {
+            "ACTIVE"
+        };
         sqlx::query("INSERT INTO tools (id, code, name, category, description, input_schema, permission_level) VALUES ($1,$2,$3,$4,$5,$6,$7) ON CONFLICT (code) DO NOTHING")
             .bind(new_id())
             .bind(t.code)
@@ -18,6 +24,12 @@ pub async fn run(pool: &PgPool, cfg: &Config) -> Result<(), anyhow::Error> {
             .bind(t.permission_level)
             .execute(pool)
             .await?;
+        if t.code == "openmaic.classroom" && !openmaic_enabled {
+            let _ =
+                sqlx::query("UPDATE tools SET status='DISABLED' WHERE code='openmaic.classroom'")
+                    .execute(pool)
+                    .await;
+        }
     }
 
     // 业务单元（V2.0 规范第七章：培训/电商/留学/企业服务）

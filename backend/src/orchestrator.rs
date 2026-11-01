@@ -3,7 +3,7 @@ use crate::auth::new_id;
 use crate::error::AppError;
 use crate::models::{Agent, Task};
 use crate::state::AppState;
-use crate::tools::{dispatch, is_valid_tool, ToolCtx};
+use crate::tools::{dispatch, is_valid_tool, record_usage, usage_today, ToolCtx};
 use serde_json::{json, Value};
 use std::time::Duration;
 
@@ -127,6 +127,28 @@ async fn ai_plan(
     bu_codes: &[String],
     agents: &[Agent],
 ) -> Result<(Vec<PlannedSubtask>, Option<String>), AppError> {
+    // 四审T-003封堵：CEO 拆解直连调用同样过日预算闸门
+    let (used_tokens, used_cost) = usage_today(state).await?;
+    if state.0.cfg.daily_token_limit > 0 && used_tokens >= state.0.cfg.daily_token_limit {
+        return Err(AppError::new(
+            axum::http::StatusCode::TOO_MANY_REQUESTS,
+            "BUDGET_EXCEEDED",
+            format!(
+                "当日 Token 预算已用尽（{}/{}）",
+                used_tokens, state.0.cfg.daily_token_limit
+            ),
+        ));
+    }
+    if state.0.cfg.daily_cost_limit_usd > 0.0 && used_cost >= state.0.cfg.daily_cost_limit_usd {
+        return Err(AppError::new(
+            axum::http::StatusCode::TOO_MANY_REQUESTS,
+            "BUDGET_EXCEEDED",
+            format!(
+                "当日费用预算已用尽（${:.2}/${:.2}）",
+                used_cost, state.0.cfg.daily_cost_limit_usd
+            ),
+        ));
+    }
     let agent_list = agents
         .iter()
         .map(|a| {
@@ -228,6 +250,7 @@ async fn ai_plan(
     if out.is_empty() {
         return Err(AppError::internal("CEO 拆解结果为空"));
     }
+    record_usage(state, None, reply.tokens).await;
     Ok((out, bu))
 }
 
@@ -350,6 +373,28 @@ async fn run_agent_ai(state: &AppState, task: &Task) -> Result<Value, AppError> 
             "AI 模型网关 (AI_BASE_URL/AI_API_KEY/AI_MODEL)",
         ));
     }
+    // 四审T-003封堵：Agent 任务直连调用同样过日预算闸门（此前绕过 call_ai）
+    let (used_tokens, used_cost) = usage_today(state).await?;
+    if state.0.cfg.daily_token_limit > 0 && used_tokens >= state.0.cfg.daily_token_limit {
+        return Err(AppError::new(
+            axum::http::StatusCode::TOO_MANY_REQUESTS,
+            "BUDGET_EXCEEDED",
+            format!(
+                "当日 Token 预算已用尽（{}/{}）",
+                used_tokens, state.0.cfg.daily_token_limit
+            ),
+        ));
+    }
+    if state.0.cfg.daily_cost_limit_usd > 0.0 && used_cost >= state.0.cfg.daily_cost_limit_usd {
+        return Err(AppError::new(
+            axum::http::StatusCode::TOO_MANY_REQUESTS,
+            "BUDGET_EXCEEDED",
+            format!(
+                "当日费用预算已用尽（${:.2}/${:.2}）",
+                used_cost, state.0.cfg.daily_cost_limit_usd
+            ),
+        ));
+    }
     let agent: Option<(Option<String>,)> =
         sqlx::query_as("SELECT system_prompt FROM agents WHERE code=$1")
             .bind(task.agent_code.as_deref().unwrap_or("ceo"))
@@ -398,6 +443,7 @@ async fn run_agent_ai(state: &AppState, task: &Task) -> Result<Value, AppError> 
             task.max_tokens.max(1) as u64,
         )
         .await?;
+    record_usage(state, Some(&task.id), reply.tokens).await;
     Ok(json!({"output": reply.text, "tokens": reply.tokens, "mode": "ai"}))
 }
 
@@ -695,7 +741,9 @@ pub async fn decide_approval(
                 .await?;
             let current = args_hash(&current_task.args.clone().unwrap_or(json!({})));
             if *expected != current {
-                return Err(AppError::conflict(
+                return Err(AppError::new(
+                    axum::http::StatusCode::CONFLICT,
+                    "ARGS_CHANGED",
                     "审批后的任务参数已发生变化，必须重新提交审批",
                 ));
             }

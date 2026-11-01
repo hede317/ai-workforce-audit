@@ -47,6 +47,8 @@ pub const TOOL_DEFS: &[ToolDef] = &[
     ToolDef { code: "content.video_script", name: "视频脚本起草", category: "content", description: "按选题生成45-60秒口播视频脚本（需AI）", permission_level: "AUTO", input_schema: r#"{"topic":"string","business_unit_code":"string?","language":"string?"}"# },
     ToolDef { code: "pipeline.content_full", name: "内容一条龙", category: "pipeline", description: "选题→口播稿→MPT自动出片(9:16+字幕)→发布包待人工上传（发布仍走红线审批）", permission_level: "AUTO", input_schema: r#"{"topic":"string","business_unit_code":"string?","script":"string?","voice":"string?","terms":"string?"}"# },
     ToolDef { code: "openmaic.classroom", name: "OpenMAIC互动课堂", category: "content", description: "把课件需求生成带幻灯片/互动/测验的可上课堂（清华MAIC公开API，约11分钟；教材内容由requirement锚定防幻觉）", permission_level: "AUTO", input_schema: r#"{"requirement":"string","language":"string?"}"# },
+    ToolDef { code: "director.pre_shoot", name: "AI导演·拍前分镜卡", category: "director", description: "按选题生成45-60秒分镜清单：3秒钩子/逐镜拍什么/三语台词/道具场地（需AI）", permission_level: "AUTO", input_schema: r#"{"topic":"string","language":"string?","market":"string?"}"# },
+    ToolDef { code: "director.review", name: "AI导演·拍后复盘", category: "director", description: "按字幕文本+口述复盘打分（钩子/演示/CTA）并给改剪建议，沉淀进记忆（需AI）", permission_level: "AUTO", input_schema: r#"{"subtitle_text":"string","notes":"string?","topic":"string?"}"# },
     ToolDef { code: "botarmy.lookup", name: "BOT军团SOP查询", category: "botarmy", description: "查DSH军团50岗清单或指定岗位的作业流程", permission_level: "AUTO", input_schema: r#"{"bot":"string?","query":"string?"}"# },
     ToolDef { code: "botarmy.dispatch", name: "BOT军团派活", category: "botarmy", description: "向DSH军团队列投派活工单（审批制）", permission_level: "APPROVAL", input_schema: r#"{"team":"string","bot":"string","subject":"string","content":"string"}"# },
     ToolDef { code: "data.daily_report", name: "经营日报", category: "data", description: "汇总当日经营数据生成Markdown日报", permission_level: "AUTO", input_schema: r#"{}"# },
@@ -120,6 +122,8 @@ pub async fn dispatch(code: &str, args: Value, ctx: &ToolCtx<'_>) -> Result<Valu
         "ecommerce.score_product" => score_product(state, &args).await,
         "pipeline.content_full" => pipeline_content_full(state, &args).await,
         "openmaic.classroom" => openmaic_classroom(state, &args).await,
+        "director.pre_shoot" => director_pre_shoot(state, ctx, &args).await,
+        "director.review" => director_review(state, ctx, &args).await,
         "botarmy.lookup" => botarmy_lookup(&args),
         "botarmy.dispatch" => botarmy_dispatch(&args).await,
         "listen.scan_keywords" => listen_scan(state, &args).await,
@@ -130,7 +134,7 @@ pub async fn dispatch(code: &str, args: Value, ctx: &ToolCtx<'_>) -> Result<Valu
     }
 }
 
-async fn usage_today(state: &AppState) -> Result<(i64, f64), AppError> {
+pub(crate) async fn usage_today(state: &AppState) -> Result<(i64, f64), AppError> {
     match sqlx::query_as::<_, (i64, f64)>(
         "SELECT COALESCE(SUM(tokens),0)::bigint, COALESCE(SUM(cost_usd),0)::float8 FROM usage_ledger WHERE created_at::date = CURRENT_DATE",
     )
@@ -149,7 +153,20 @@ pub(crate) async fn record_usage(state: &AppState, task_id: Option<&str>, tokens
     if tokens == 0 {
         return;
     }
-    let cost = tokens as f64 / 1000.0 * state.0.cfg.ai_cost_per_1k_usd;
+    // 四审：按模型分别计价——AI_MODEL_RATES_JSON（如 {"glm":0.002,"deepseek":0.004}），按模型名子串匹配，回退统一费率
+    let rate = std::env::var("AI_MODEL_RATES_JSON")
+        .ok()
+        .and_then(|j| serde_json::from_str::<serde_json::Value>(&j).ok())
+        .and_then(|v| {
+            let model = state.0.cfg.ai_model.to_lowercase();
+            v.as_object().and_then(|o| {
+                o.iter()
+                    .find(|(k, _)| model.contains(&k.to_lowercase()))
+                    .and_then(|(_, v)| v.as_f64())
+            })
+        })
+        .unwrap_or(state.0.cfg.ai_cost_per_1k_usd);
+    let cost = tokens as f64 / 1000.0 * rate;
     let _ = sqlx::query(
         "INSERT INTO usage_ledger (id, task_id, tokens, cost_usd) VALUES ($1,$2,$3,$4)",
     )
@@ -230,13 +247,24 @@ fn is_restricted_ip(ip: &std::net::IpAddr) -> bool {
                 || v4.is_broadcast()
                 || v4.is_multicast()
                 || v4.is_documentation()
+                // 四审T-004：补齐审计指定网段
+                || (v4.octets()[0] == 100 && (v4.octets()[1] & 0xc0) == 64) // 100.64/10 CGNAT（含阿里云元数据 100.100.100.200）
+                || (v4.octets()[0] == 198 && (v4.octets()[1] & 0xfe) == 30) // 198.18/15 基准测试
+                || (v4.octets()[0] == 192 && v4.octets()[1] == 0 && v4.octets()[2] == 0) // 192.0.0/24
+                || (v4.octets()[0] & 0xf0) == 240 // 240/4 保留
         }
         std::net::IpAddr::V6(v6) => {
+            // 四审T-004：IPv4-mapped IPv6（::ffff:a.b.c.d）先转回 V4 再按 V4 规则判
+            if let Some(v4) = v6.to_ipv4_mapped() {
+                return is_restricted_ip(&std::net::IpAddr::V4(v4));
+            }
             v6.is_loopback()
                 || v6.is_unspecified()
                 || v6.is_multicast()
-                || (v6.segments()[0] & 0xfe00) == 0xfc00 // fc00::/7 唯一本地
-                || (v6.segments()[0] & 0xffc0) == 0xfe80 // fe80::/10 链路本地
+                || (v6.segments()[0] & 0xfe00) == 0xfc00 // fc00::/7
+                || (v6.segments()[0] & 0xffc0) == 0xfe80 // fe80::/10
+                || (v6.segments()[0] == 0x0064 && v6.segments()[1] == 0xff9b && v6.segments()[2..8].iter().all(|&s| s == 0))
+            // NAT64 64:ff9b::/96
         }
     }
 }
@@ -250,6 +278,7 @@ async fn validate_external_url(raw: &str) -> Result<String, AppError> {
     let host = parsed
         .host_str()
         .ok_or_else(|| AppError::bad_request("URL 缺少主机名"))?
+        .trim_matches(|c| c == '[' || c == ']')
         .to_string();
     let port = parsed.port_or_known_default().unwrap_or(80);
     let addrs: Vec<std::net::IpAddr> = if let Ok(ip) = host.parse() {
@@ -279,6 +308,7 @@ async fn fetch_one_hop(url: &str) -> Result<reqwest::Response, AppError> {
     let host = parsed
         .host_str()
         .ok_or_else(|| AppError::bad_request("URL 缺少主机名"))?
+        .trim_matches(|c| c == '[' || c == ']')
         .to_string();
     let port = parsed.port_or_known_default().unwrap_or(80);
     let addrs: Vec<std::net::IpAddr> = if let Ok(ip) = host.parse() {
@@ -316,7 +346,15 @@ async fn fetch_limited(
 ) -> Result<(u16, String), AppError> {
     let mut current = url.to_string();
     let mut hops = 0;
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15); // 四审T-004：跨跳总时限15s
     let resp = loop {
+        if std::time::Instant::now() > deadline {
+            return Err(AppError::new(
+                axum::http::StatusCode::REQUEST_TIMEOUT,
+                "SSRF_BLOCKED",
+                "抓取总时限 15s 已到",
+            ));
+        }
         let resp = fetch_one_hop(&current).await?;
         if resp.status().is_redirection() {
             if hops >= 3 {
@@ -522,14 +560,15 @@ async fn seo_check(state: &AppState, args: &Value) -> Result<Value, AppError> {
         ]
     };
     if let Some(url) = url_for_sitemap {
-        let base = url.trim_end_matches('/');
-        let sm = state
-            .0
-            .http_no_redirect
-            .get(format!("{base}/sitemap.xml"))
-            .send()
-            .await;
-        checks.push(json!({"item": "Sitemap可访问", "ok": sm.map(|r| r.status().is_success()).unwrap_or(false)}));
+        // 四审T-004：sitemap 请求改走 fetch_limited 守卫（校验+钉IP+限量），封堵重绑定窗口
+        let sm = fetch_limited(
+            state,
+            &format!("{}/sitemap.xml", url.trim_end_matches('/')),
+            256 * 1024,
+        )
+        .await;
+        checks
+            .push(json!({"item": "Sitemap可访问", "ok": sm.map(|r| r.0 == 200).unwrap_or(false)}));
     }
     let total = checks.len();
     let passed = checks
@@ -780,13 +819,28 @@ async fn crm_create_lead(state: &AppState, args: &Value) -> Result<Value, AppErr
             )));
         }
     }
+    // 四审：电话规范化（WhatsApp市场主通道）+ 按电话去重
+    let phone = take_str(args, "phone")
+        .map(|p| p.replace([' ', '-', '(', ')'], ""))
+        .filter(|p| !p.is_empty());
+    if let Some(ph) = &phone {
+        let dup: Option<(String,)> = sqlx::query_as("SELECT id FROM leads WHERE phone = $1")
+            .bind(ph)
+            .fetch_optional(state.pool())
+            .await?;
+        if dup.is_some() {
+            return Err(AppError::conflict(format!(
+                "该电话线索已存在，拒绝重复创建: {ph}"
+            )));
+        }
+    }
     let id = new_id();
     sqlx::query("INSERT INTO leads (id, business_unit_code, name, email, phone, country, source_channel, summary) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)")
         .bind(&id)
         .bind(take_str(args, "business_unit_code").unwrap_or_default())
         .bind(take_str(args, "name").unwrap_or_default())
         .bind(email.clone())
-        .bind(take_str(args, "phone").unwrap_or_default())
+        .bind(phone)
         .bind(take_str(args, "country").unwrap_or_default())
         .bind(take_str(args, "source_channel").unwrap_or_else(|| "agent".into()))
         .bind(take_str(args, "summary").unwrap_or_default())
@@ -854,6 +908,25 @@ async fn email_send(state: &AppState, args: &Value) -> Result<Value, AppError> {
         return Err(AppError::forbidden(format!(
             "联系人 {email} 状态为 {status}（退订/拒绝营销），禁止发送"
         )));
+    }
+    // 四审：闸门扩展到电话（WhatsApp 同受 consent 管控）
+    let digits: String = to
+        .chars()
+        .filter(|c| c.is_ascii_digit() || *c == '+')
+        .collect();
+    if digits.len() >= 7 {
+        let phone_block: Option<(String, String)> = sqlx::query_as(
+            "SELECT phone, consent_status FROM leads WHERE phone LIKE $1 AND consent_status IN ('UNSUBSCRIBED','DENIED') LIMIT 1",
+        )
+        .bind(format!("%{}", digits.trim_start_matches('+')))
+        .fetch_optional(state.pool())
+        .await
+        .unwrap_or(None);
+        if let Some((ph, status)) = phone_block {
+            return Err(AppError::forbidden(format!(
+                "联系人 {ph} 状态为 {status}（退订/拒绝联系），禁止发送"
+            )));
+        }
     }
     let cfg = &state.0.cfg;
     let from: Mailbox = cfg
@@ -1258,14 +1331,35 @@ async fn botarmy_dispatch(args: &Value) -> Result<Value, AppError> {
     {
         return Err(AppError::bad_request("非法 bot 名"));
     }
-    let base =
-        std::path::Path::new(&std::env::var("HOME").unwrap_or_default()).join("Doubao/BOT军团");
+    // 四审T-005：team 白名单字符校验 + canonicalize 断言，封死路径穿越（../../.ssh 类）
+    if team.contains("..")
+        || team.contains('/')
+        || team.contains('\\')
+        || !team
+            .chars()
+            .all(|c| c.is_alphanumeric() || matches!(c, '-' | '_' | ' '))
+    {
+        return Err(AppError::bad_request("team 含非法字符"));
+    }
+    let base = std::path::Path::new(
+        &std::env::var("BOTARMY_DIR")
+            .unwrap_or_else(|_| std::env::var("HOME").unwrap_or_default() + "/Doubao/BOT军团"),
+    )
+    .to_path_buf();
     let team_dir = base.join(&team);
     if !team_dir.is_dir() {
         return Err(AppError::bad_request(format!(
             "团目录不存在（白名单校验）: {team}"
         )));
     }
+    let team_canonical = team_dir
+        .canonicalize()
+        .map_err(|e| AppError::bad_request(format!("团目录解析失败: {e}")))?;
+    let base_canonical = base.canonicalize().unwrap_or_else(|_| base.clone());
+    if !team_canonical.starts_with(&base_canonical) {
+        return Err(AppError::ssrf("路径穿越被拦截"));
+    }
+    let team_dir = team_canonical;
     let returns_dir = team_dir.join("回报");
     let stamp = chrono::Local::now().format("%Y%m%d-%H%M%S");
     let safe_subject: String = subject
@@ -1356,8 +1450,9 @@ async fn pipeline_content_full(state: &AppState, args: &Value) -> Result<Value, 
         "pipeline": true,
         "checklist": ["看片验收", "平台上传", "AI内容标注", "发布后回填链接到发布中心"],
     });
-    sqlx::query("INSERT INTO publishing_tasks (id, content_asset_id, platform, status, payload) VALUES ($1,$2,'douyin','HUMAN_QUEUE',$3)")
-        .bind(&pid).bind(&tid).bind(&payload_pkg)
+    let platform = take_str(args, "platform").unwrap_or_else(|| "douyin".into());
+    sqlx::query("INSERT INTO publishing_tasks (id, content_asset_id, platform, status, payload) VALUES ($1,$2,$3,'HUMAN_QUEUE',$4)")
+        .bind(&pid).bind(&tid).bind(&platform).bind(&payload_pkg)
         .execute(state.pool()).await?;
     Ok(json!({
         "output": format!("一条龙完成：选题→口播稿→成片({}秒渲染)→发布包待上传", seconds),
@@ -1448,4 +1543,58 @@ async fn openmaic_classroom(state: &AppState, args: &Value) -> Result<Value, App
         "output": format!("互动课堂已生成：{link}"),
         "job_id": job_id, "classroom_url": link, "payload": payload, "mode": "openmaic",
     }))
+}
+
+// ---------- AI 导演（拍摄前后闭环；自动发布仍走红线审批） ----------
+
+async fn director_pre_shoot(
+    state: &AppState,
+    ctx: &ToolCtx<'_>,
+    args: &Value,
+) -> Result<Value, AppError> {
+    let topic = take_str(args, "topic").ok_or_else(|| AppError::bad_request("缺少 topic"))?;
+    let language = take_str(args, "language").unwrap_or_else(|| "zh".into());
+    let market = take_str(args, "market").unwrap_or_else(|| "巴基斯坦".into());
+    let reply = call_ai(
+        state,
+        "你是短视频AI导演。输出45-60秒真人出镜分镜卡：①开头3秒钩子（原文）②逐镜清单（每镜拍什么/台词/时长）③道具与场地提醒④结尾CTA。台词给中英对照。只输出分镜卡内容。",
+        &format!("选题：{topic}\n目标市场：{market}\n语言：{language}"),
+        2000,
+    )
+    .await?;
+    let id = new_id();
+    sqlx::query("INSERT INTO content_assets (id, content_type, title, body, language, status, source_task_id) VALUES ($1,'shooting_card',$2,$3,$4,'DRAFT',$5)")
+        .bind(&id)
+        .bind(format!("【拍摄卡】{}", truncate(&topic, 80)))
+        .bind(&reply.text)
+        .bind(&language)
+        .bind(take_str(args, "business_unit_code").unwrap_or_default())
+        .execute(state.pool()).await?;
+    record_usage(state, ctx_task(args), reply.tokens).await;
+    Ok(json!({"output": format!("拍摄卡已生成并入库"), "content_id": id, "mode": "ai"}))
+}
+
+fn ctx_task(_args: &Value) -> Option<&str> {
+    None
+}
+
+async fn director_review(
+    state: &AppState,
+    ctx: &ToolCtx<'_>,
+    args: &Value,
+) -> Result<Value, AppError> {
+    let subtitle = take_str(args, "subtitle_text")
+        .ok_or_else(|| AppError::bad_request("缺少 subtitle_text（成片字幕文本）"))?;
+    let notes = take_str(args, "notes").unwrap_or_default();
+    let topic = take_str(args, "topic").unwrap_or_default();
+    let reply = call_ai(
+        state,
+        "你是短视频AI导演，按标准打分并给改剪建议：①钩子3秒内是否抓人（0-10）②有没有演示产品/画面证据（0-10）③有没有行动号召（0-10）④ retention 风险点。只输出JSON。",
+        &format!("选题：{topic}\n字幕：{subtitle}\n口述复盘：{notes}\n\n输出：{{\"hook\":0-10,\"demo\":0-10,\"cta\":0-10,\"risks\":\"风险点\",\"suggestions\":\"2-3条改剪建议\"}}"),
+        1200,
+    )
+    .await?;
+    let parsed = crate::ai::extract_json(&reply.text).unwrap_or(json!({}));
+    record_usage(state, Some(ctx.task_id.as_str()), reply.tokens).await;
+    Ok(json!({"output": "复盘评分已生成", "score": parsed, "mode": "ai"}))
 }

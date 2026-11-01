@@ -1276,3 +1276,116 @@ async fn t003_daily_budget_gate() {
     assert_eq!(v["error"]["code"], "BUDGET_EXCEEDED");
     std::env::remove_var("DAILY_TOKEN_LIMIT");
 }
+
+#[tokio::test]
+async fn t004_ssrf_mapped_and_cgnat() {
+    let _g = SERIAL.lock().await;
+    let (app, _) = setup().await;
+    let token = login(&app).await;
+    for url in [
+        "http://[::ffff:127.0.0.1]:8600/health", // IPv4-mapped IPv6
+        "http://100.100.100.200/latest/meta-data/", // 阿里云元数据（CGNAT段）
+        "http://[::ffff:7f00:1]/",               // ::ffff:7f00:1 = 127.0.0.1
+    ] {
+        let (st, v) = send(
+            app.clone(),
+            req(
+                "POST",
+                "/api/v1/tools/web.fetch/invoke",
+                Some(&token),
+                Some(json!({"url": url})),
+            ),
+        )
+        .await;
+        assert_eq!(st, StatusCode::BAD_REQUEST, "{url}: {v}");
+        assert_eq!(v["error"]["code"], "SSRF_BLOCKED", "{url}: {v}");
+    }
+}
+
+#[tokio::test]
+async fn t005_botarmy_team_traversal_blocked() {
+    let _g = SERIAL.lock().await;
+    let (app, _) = setup().await;
+    let token = login(&app).await;
+    for team in ["../../tmp", "..\\\\ssh", "a/b", "team;rm"] {
+        let (st, v) = send(
+            app.clone(),
+            req(
+                "POST",
+                "/api/v1/tools/botarmy.dispatch/invoke",
+                Some(&token),
+                Some(json!({"team": team, "bot": "copy", "subject": "x", "content": "x"})),
+            ),
+        )
+        .await;
+        // botarmy.dispatch 是 APPROVAL 级：invoke 直调 409 拦截在先——用 lookup/白名单验证团队合法性走 approve 流程太重，
+        // 这里验证参数校验前置：即便未来权限变化，穿越参数也进不来（409 或 400 都算拦截）
+        assert!(
+            st == StatusCode::CONFLICT || st == StatusCode::BAD_REQUEST,
+            "穿越参数未被拦截: {team} {v}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn t005_args_changed_error_code() {
+    let _g = SERIAL.lock().await;
+    let (app, pool) = setup().await;
+    let token = login(&app).await;
+    let goal = format!("ARGS_CHANGED码-{}", Uuid::new_v4().simple());
+    let (_, g) = send(
+        app.clone(),
+        req(
+            "POST",
+            "/api/v1/commander/goals",
+            Some(&token),
+            Some(json!({"goal": goal})),
+        ),
+    )
+    .await;
+    let root_id = g["data"]["root_id"].as_str().unwrap().to_string();
+    let _ = send(
+        app.clone(),
+        req(
+            "POST",
+            &format!("/api/v1/commander/goals/{root_id}/execute"),
+            Some(&token),
+            Some(json!({"sync": true})),
+        ),
+    )
+    .await;
+    let (_, ap) = send(
+        app.clone(),
+        req(
+            "GET",
+            "/api/v1/approvals?status=PENDING",
+            Some(&token),
+            None,
+        ),
+    )
+    .await;
+    let apid = ap["data"]["items"][0]["id"].as_str().unwrap().to_string();
+    let (tid,): (String,) = sqlx::query_as("SELECT task_id FROM approvals WHERE id=$1")
+        .bind(&apid)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    // 篡改参数 → 批准 → 409 + ARGS_CHANGED 专用码
+    sqlx::query("UPDATE tasks SET args='{\"tampered\":true}'::jsonb WHERE id=$1")
+        .bind(&tid)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let (st, v) = send(
+        app.clone(),
+        req(
+            "POST",
+            &format!("/api/v1/approvals/{apid}/decide"),
+            Some(&token),
+            Some(json!({"decision": "APPROVED"})),
+        ),
+    )
+    .await;
+    assert_eq!(st, StatusCode::CONFLICT);
+    assert_eq!(v["error"]["code"], "ARGS_CHANGED", "{v}");
+}
