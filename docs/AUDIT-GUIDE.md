@@ -61,3 +61,19 @@ cd frontend && npm install && npm run build && npm run start   # :8610
 6. 多租户：tenant_id 已预留但未启用——何时启用、怎么切？
 
 联系方式：通过仓库 Issue 或仓库所有者。
+
+---
+
+## 三审整改记录（2026-11-01，branch audit3-remediation，PR#1）
+
+| 三审发现 | 处置 | 代码位置 |
+|---|---|---|
+| 跨用户执行/重试/取消 | load_task_for_user 统一所有权闸门 | routers/agents.rs |
+| 审批无事务/可重复/可自批 | FOR UPDATE 行锁+PENDING条件更新+事务内快照哈希校验+创建者不自批(ADMIN例外) | orchestrator.rs::decide_approval |
+| 取消不能停运行中任务 | CancelRequested 两阶段协作取消+完成守卫(不覆盖取消)+副作用照实存档 | agents.rs/orchestrator.rs |
+| DNS重绑定 | 校验后按已验证IP现建钉死客户端(resolve) | tools.rs::fetch_limited |
+| 邮件无授权闸门 | 退订/拒绝名单命中即拒，审批+审计保留 | tools.rs::email_send |
+| 生产配置 | 弱密钥拒启、compose密码环境变量化、n8n钉版本+本机绑定、.gitignore扩面 | config.rs/docker-compose.yml |
+| CI | GitHub Actions: fmt/clippy(-D warnings)/test(pg服务)/前端build/密钥扫描 | .github/workflows/ci.yml |
+
+审计意见驳回记录：globals.css "8 px"（实为 8px，系旧版本误读）。
