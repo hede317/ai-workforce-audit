@@ -48,6 +48,7 @@ pub const TOOL_DEFS: &[ToolDef] = &[
     ToolDef { code: "listen.import_snippet", name: "舆情导入", category: "listening", description: "粘贴抖音/TikTok文案、评论或链接文本，提炼需求信号", permission_level: "AUTO", input_schema: r#"{"text":"string","business_unit_code":"string?","platform":"string?"}"# },
     ToolDef { code: "content.video_script", name: "视频脚本起草", category: "content", description: "按选题生成45-60秒口播视频脚本（需AI）", permission_level: "AUTO", input_schema: r#"{"topic":"string","business_unit_code":"string?","language":"string?"}"# },
     ToolDef { code: "pipeline.content_full", name: "内容一条龙", category: "pipeline", description: "选题→口播稿→MPT自动出片(9:16+字幕)→发布包待人工上传（发布仍走红线审批）", permission_level: "AUTO", input_schema: r#"{"topic":"string","business_unit_code":"string?","script":"string?","voice":"string?","terms":"string?"}"# },
+    ToolDef { code: "openmaic.classroom", name: "OpenMAIC互动课堂", category: "content", description: "把课件需求生成带幻灯片/互动/测验的可上课堂（清华MAIC公开API，约11分钟；教材内容由requirement锚定防幻觉）", permission_level: "AUTO", input_schema: r#"{"requirement":"string","language":"string?"}"# },
     ToolDef { code: "botarmy.lookup", name: "BOT军团SOP查询", category: "botarmy", description: "查DSH军团50岗清单或指定岗位的作业流程", permission_level: "AUTO", input_schema: r#"{"bot":"string?","query":"string?"}"# },
     ToolDef { code: "botarmy.dispatch", name: "BOT军团派活", category: "botarmy", description: "向DSH军团队列投派活工单（审批制）", permission_level: "APPROVAL", input_schema: r#"{"team":"string","bot":"string","subject":"string","content":"string"}"# },
     ToolDef { code: "data.daily_report", name: "经营日报", category: "data", description: "汇总当日经营数据生成Markdown日报", permission_level: "AUTO", input_schema: r#"{}"# },
@@ -96,6 +97,7 @@ pub async fn dispatch(code: &str, args: Value, ctx: &ToolCtx<'_>) -> Result<Valu
         "email.send_draft" => email_send(state, &args).await,
         "ecommerce.score_product" => score_product(state, &args).await,
         "pipeline.content_full" => pipeline_content_full(state, &args).await,
+        "openmaic.classroom" => openmaic_classroom(state, &args).await,
         "botarmy.lookup" => botarmy_lookup(&args),
         "botarmy.dispatch" => botarmy_dispatch(&args).await,
         "listen.scan_keywords" => listen_scan(state, &args).await,
@@ -932,5 +934,57 @@ async fn pipeline_content_full(state: &AppState, args: &Value) -> Result<Value, 
     Ok(json!({
         "output": format!("一条龙完成：选题→口播稿→成片({}秒渲染)→发布包待上传", seconds),
         "topic_id": tid, "video": video_path, "publishing_task_id": pid, "mode": "pipeline",
+    }))
+}
+
+
+// ---------- OpenMAIC 互动课堂（清华MAIC公开API，接法v1已验证） ----------
+
+async fn openmaic_classroom(state: &AppState, args: &Value) -> Result<Value, AppError> {
+    let requirement = take_str(args, "requirement").ok_or_else(|| AppError::bad_request("缺少 requirement（教材内容锚定的课件需求）"))?;
+    let language = take_str(args, "language").unwrap_or_else(|| "zh-CN".into());
+    let base = state.0.cfg.openmaic_base.trim_end_matches('/');
+    let ep = format!("{base}/api/generate-classroom");
+    // 两段式：第一次种匿名cookie（返回425属正常），第二次正式提交
+    let ping = json!({"requirement": "ping", "language": language});
+    let _ = state.0.http_cookies.post(&ep).json(&ping).send().await;
+    let resp = state.0.http_cookies.post(&ep).json(&json!({"requirement": requirement, "language": language})).send().await
+        .map_err(|e| AppError::internal(format!("OpenMAIC连接失败: {e}")))?;
+    let first: Value = resp.json().await.unwrap_or(json!({}));
+    let job_id = first.get("jobId").and_then(|v| v.as_str()).map(|s| s.to_string());
+    let job_id = match job_id {
+        Some(j) => j,
+        None => return Err(AppError::internal(format!("OpenMAIC 未受理: {}", first.to_string().chars().take(200).collect::<String>()))),
+    };
+    // 轮询至完成（5s间隔，上限14分钟——小何实测约11分钟）
+    let poll_ep = format!("{ep}/{job_id}");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(14 * 60);
+    let mut payload = json!({});
+    while std::time::Instant::now() < deadline {
+        tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+        let r = state.0.http_long.get(&poll_ep).send().await
+            .map_err(|e| AppError::internal(format!("轮询失败: {e}")))?;
+        payload = r.json().await.unwrap_or(json!({}));
+        let done = payload.get("done").and_then(|v| v.as_bool()).unwrap_or(false)
+            || payload.get("runState").and_then(|v| v.as_str()) == Some("succeeded");
+        let failed = payload.get("runState").and_then(|v| v.as_str()) == Some("failed");
+        if done || failed {
+            break;
+        }
+    }
+    let run_state = payload.get("runState").and_then(|v| v.as_str()).unwrap_or("unknown").to_string();
+    if run_state == "failed" {
+        return Err(AppError::internal("OpenMAIC 生成失败"));
+    }
+    if run_state != "succeeded" {
+        return Err(AppError::new(axum::http::StatusCode::ACCEPTED, "STILL_RUNNING", format!("任务 {job_id} 仍在生成中，稍后再查")));
+    }
+    let link = payload.get("classroomUrl").and_then(|v| v.as_str())
+        .or_else(|| payload.get("url").and_then(|v| v.as_str()))
+        .or_else(|| payload.get("link").and_then(|v| v.as_str()))
+        .unwrap_or("").to_string();
+    Ok(json!({
+        "output": format!("互动课堂已生成：{link}"),
+        "job_id": job_id, "classroom_url": link, "payload": payload, "mode": "openmaic",
     }))
 }

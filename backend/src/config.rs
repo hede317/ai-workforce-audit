@@ -26,6 +26,7 @@ pub struct Config {
     pub smtp_from: String,
     pub smtp_security: String,
     pub cors_origins: String,
+    pub openmaic_base: String,
 }
 
 fn envs(key: &str, default: &str) -> String {
@@ -62,6 +63,7 @@ impl Config {
             smtp_from: envs("SMTP_FROM", ""),
             smtp_security: envs("SMTP_SECURITY", "ssl"),
             cors_origins: envs("AWF_CORS_ORIGINS", ""),
+            openmaic_base: envs("OPENMAIC_BASE", "https://open.maic.chat"),
         }
     }
 

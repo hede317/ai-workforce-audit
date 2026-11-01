@@ -13,6 +13,8 @@ pub struct Inner {
     pub http_no_redirect: reqwest::Client,
     /// 长超时客户端：MPT出片等分钟级任务专用
     pub http_long: reqwest::Client,
+    /// 带cookie存储的客户端：OpenMAIC 匿名身份（425→202 两段式）
+    pub http_cookies: reqwest::Client,
 }
 
 impl AppState {
@@ -30,7 +32,12 @@ impl AppState {
             .timeout(std::time::Duration::from_secs(2500))
             .user_agent("HedeYou-AI-Workforce/0.1")
             .build()?;
-        Ok(Self(Arc::new(Inner { cfg, pool, http, http_no_redirect, http_long })))
+        let http_cookies = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(60))
+            .user_agent("HedeYou-AI-Workforce/0.1")
+            .cookie_store(true)
+            .build()?;
+        Ok(Self(Arc::new(Inner { cfg, pool, http, http_no_redirect, http_long, http_cookies })))
     }
 
     pub fn pool(&self) -> &PgPool {
