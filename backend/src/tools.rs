@@ -52,6 +52,11 @@ pub const TOOL_DEFS: &[ToolDef] = &[
     ToolDef { code: "botarmy.lookup", name: "BOT军团SOP查询", category: "botarmy", description: "查DSH军团50岗清单或指定岗位的作业流程", permission_level: "AUTO", input_schema: r#"{"bot":"string?","query":"string?"}"# },
     ToolDef { code: "botarmy.dispatch", name: "BOT军团派活", category: "botarmy", description: "向DSH军团队列投派活工单（审批制）", permission_level: "APPROVAL", input_schema: r#"{"team":"string","bot":"string","subject":"string","content":"string"}"# },
     ToolDef { code: "data.daily_report", name: "经营日报", category: "data", description: "汇总当日经营数据生成Markdown日报", permission_level: "AUTO", input_schema: r#"{}"# },
+    // ---- 国内/海外自动发布（social-auto-upload 桥）----
+    ToolDef { code: "publish.platforms", name: "发布平台清单", category: "publish", description: "列出国内5个与海外2个可自动发布的平台及区域归属", permission_level: "AUTO", input_schema: r#"{}"# },
+    ToolDef { code: "publish.check_account", name: "发布账号体检", category: "publish", description: "检查某平台某账号的登录态是否有效（只读，不改cookie）", permission_level: "AUTO", input_schema: r#"{"platform":"string","account":"string?"}"# },
+    ToolDef { code: "publish.auto", name: "自动发布(单平台)", category: "publish", description: "红线：必须审批。调用 social-auto-upload 把成片直接发到指定平台", permission_level: "APPROVAL", input_schema: r#"{"platform":"string","file":"string","title":"string","account":"string?","desc":"string?","tags":"array?","schedule":"string?","content_asset_id":"string?"}"# },
+    ToolDef { code: "publish.auto_many", name: "自动发布(多平台)", category: "publish", description: "红线：必须审批。按国内/海外分区批量发布到多个平台，单平台失败不中断整批", permission_level: "APPROVAL", input_schema: r#"{"platforms":"array","file":"string","title":"string","account":"string?","desc":"string?","tags":"array?","schedule":"string?","content_asset_id":"string?"}"# },
 ];
 
 fn tool_permission(code: &str) -> &'static str {
@@ -129,6 +134,10 @@ pub async fn dispatch(code: &str, args: Value, ctx: &ToolCtx<'_>) -> Result<Valu
         "listen.scan_keywords" => listen_scan(state, &args).await,
         "listen.import_snippet" => listen_import(state, ctx, &args).await,
         "content.video_script" => video_script(state, ctx, &args).await,
+        "publish.platforms" => Ok(crate::publisher::platform_catalog()),
+        "publish.check_account" => publish_check_account(state, &args).await,
+        "publish.auto" => publish_auto(state, &args).await,
+        "publish.auto_many" => publish_auto_many(state, &args).await,
         "data.daily_report" => daily_report(state).await,
         _ => Err(AppError::bad_request(format!("工具 {code} 未实现"))),
     }
@@ -1486,6 +1495,270 @@ async fn pipeline_content_full(state: &AppState, args: &Value) -> Result<Value, 
     Ok(json!({
         "output": format!("一条龙完成：选题→口播稿→成片({}秒渲染)→发布包待上传", seconds),
         "topic_id": tid, "video": video_path, "publishing_task_id": pid, "mode": "pipeline",
+    }))
+}
+
+// ---------- 国内/海外自动发布（social-auto-upload 桥） ----------
+
+/// 账号体检：只读，不改 cookie，不需要审批
+async fn publish_check_account(state: &AppState, args: &Value) -> Result<Value, AppError> {
+    let platform = take_str(args, "platform")
+        .ok_or_else(|| AppError::bad_request("缺少 platform（douyin/bilibili/kuaishou/xiaohongshu/tencent/youtube/tiktok）"))?;
+    let account = take_str(args, "account").unwrap_or_else(|| state.0.cfg.sau_default_account.clone());
+    let r = crate::publisher::check_account(&state.0.cfg, &platform, &account).await?;
+    Ok(json!({
+        "output": format!("{}（{}）账号 {} 登录态：{}", r.platform, r.region.as_str(), r.account, r.status),
+        "platform": r.platform,
+        "region": r.region.as_str(),
+        "account": r.account,
+        "status": r.status,
+        "detail": r.detail,
+    }))
+}
+
+/// 落一条发布任务记录，返回 publishing_task_id
+async fn insert_publish_task(
+    state: &AppState,
+    platform: &str,
+    region: &str,
+    account: &str,
+    status: &str,
+    payload: Value,
+) -> Result<String, AppError> {
+    let id = new_id();
+    sqlx::query(
+        "INSERT INTO publishing_tasks (id, platform, account, status, region, mode, payload, started_at) \
+         VALUES ($1,$2,$3,$4,$5,'AUTO',$6,now())",
+    )
+    .bind(&id)
+    .bind(platform)
+    .bind(account)
+    .bind(status)
+    .bind(region)
+    .bind(payload)
+    .execute(state.pool())
+    .await?;
+    Ok(id)
+}
+
+/// 把发布结果写回任务行 + 成功时补 publishing_results
+async fn finalize_publish_task(
+    state: &AppState,
+    task_id: &str,
+    outcome: &crate::publisher::PublishOutcome,
+    extra: &Value,
+) -> Result<(), AppError> {
+    let status = if outcome.ok { "PUBLISHED" } else { "FAILED" };
+    sqlx::query(
+        "UPDATE publishing_tasks SET status=$1, error=$2, exit_log=$3, finished_at=now() WHERE id=$4",
+    )
+    .bind(status)
+    .bind(if outcome.ok {
+        None::<String>
+    } else if outcome.timed_out {
+        Some("TIMEOUT".to_string())
+    } else {
+        Some(format!("EXIT_{}", outcome.exit_code.unwrap_or(-1)))
+    })
+    .bind(&outcome.log)
+    .bind(task_id)
+    .execute(state.pool())
+    .await?;
+
+    if outcome.ok {
+        let rid = new_id();
+        sqlx::query(
+            "INSERT INTO publishing_results (id, publishing_task_id, platform_post_id, published_url, published_at, metrics) \
+             VALUES ($1,$2,NULL,NULL,now(),$3)",
+        )
+        .bind(&rid)
+        .bind(task_id)
+        .bind(extra.clone())
+        .execute(state.pool())
+        .await?;
+    }
+    Ok(())
+}
+
+fn tags_from(args: &Value) -> Vec<String> {
+    args.get("tags")
+        .and_then(|v| v.as_array())
+        .map(|a| {
+            a.iter()
+                .filter_map(|x| x.as_str())
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+async fn publish_auto(state: &AppState, args: &Value) -> Result<Value, AppError> {
+    let platform = take_str(args, "platform").ok_or_else(|| AppError::bad_request("缺少 platform"))?;
+    let file = take_str(args, "file").ok_or_else(|| AppError::bad_request("缺少 file（成片绝对路径）"))?;
+    let title = take_str(args, "title").ok_or_else(|| AppError::bad_request("缺少 title"))?;
+    let account = take_str(args, "account").unwrap_or_else(|| state.0.cfg.sau_default_account.clone());
+
+    let spec = crate::publisher::find_platform(&platform)
+        .ok_or_else(|| AppError::bad_request(format!("不支持的平台: {platform}")))?;
+    let region = spec.region.as_str().to_string();
+
+    let req = crate::publisher::PublishRequest {
+        platform: platform.clone(),
+        account: account.clone(),
+        file: file.clone(),
+        title: title.clone(),
+        desc: take_str(args, "desc").unwrap_or_default(),
+        tags: tags_from(args),
+        schedule: take_str(args, "schedule"),
+    };
+
+    let task_id = insert_publish_task(
+        state,
+        spec.key,
+        &region,
+        &account,
+        "PUBLISHING",
+        json!({
+            "file": file,
+            "title": title,
+            "content_asset_id": take_str(args, "content_asset_id"),
+        }),
+    )
+    .await?;
+
+    let outcome = crate::publisher::publish(&state.0.cfg, &req).await;
+    match outcome {
+        Ok(o) => {
+            finalize_publish_task(state, &task_id, &o, &json!({"region": region, "account": account}))
+                .await?;
+            Ok(json!({
+                "output": if o.ok {
+                    format!("{}（{}）发布成功", o.platform, region)
+                } else if o.needs_login {
+                    format!("{}（{}）登录态失效：请先在终端跑 `sau {} login --account {}` 重新扫码，再重发",
+                        o.platform, region, o.platform, o.account)
+                } else {
+                    format!("{}（{}）发布失败：{}", o.platform, region,
+                        if o.timed_out { "超时".to_string() } else { format!("退出码 {:?}", o.exit_code) })
+                },
+                "publishing_task_id": task_id,
+                "platform": o.platform,
+                "region": region,
+                "account": o.account,
+                "ok": o.ok,
+                "timed_out": o.timed_out,
+                "needs_login": o.needs_login,
+                "exit_code": o.exit_code,
+                "log_tail": o.log,
+                "mode": "auto_publish",
+            }))
+        }
+        Err(e) => {
+            // 环境/参数错误也要把任务标失败，不能留 PUBLISHING 悬挂
+            sqlx::query(
+                "UPDATE publishing_tasks SET status='FAILED', error=$1, finished_at=now() WHERE id=$2",
+            )
+            .bind(format!("{}: {}", e.code, e.message))
+            .bind(&task_id)
+            .execute(state.pool())
+            .await
+            .ok();
+            Err(e)
+        }
+    }
+}
+
+async fn publish_auto_many(state: &AppState, args: &Value) -> Result<Value, AppError> {
+    let file = take_str(args, "file").ok_or_else(|| AppError::bad_request("缺少 file（成片绝对路径）"))?;
+    let title = take_str(args, "title").ok_or_else(|| AppError::bad_request("缺少 title"))?;
+    let account = take_str(args, "account").unwrap_or_else(|| state.0.cfg.sau_default_account.clone());
+
+    let platforms: Vec<String> = args
+        .get("platforms")
+        .and_then(|v| v.as_array())
+        .map(|a| a.iter().filter_map(|x| x.as_str()).map(|s| s.to_string()).collect())
+        .unwrap_or_default();
+    if platforms.is_empty() {
+        return Err(AppError::bad_request("缺少 platforms 数组"));
+    }
+    if platforms.len() > 8 {
+        return Err(AppError::bad_request("单次最多 8 个平台"));
+    }
+    // 先整体校验平台名，避免跑一半才发现拼错
+    for p in &platforms {
+        if crate::publisher::find_platform(p).is_none() {
+            return Err(AppError::bad_request(format!("不支持的平台: {p}")));
+        }
+    }
+
+    let base = crate::publisher::PublishRequest {
+        platform: String::new(),
+        account: account.clone(),
+        file: file.clone(),
+        title: title.clone(),
+        desc: take_str(args, "desc").unwrap_or_default(),
+        tags: tags_from(args),
+        schedule: take_str(args, "schedule"),
+    };
+
+    let outcomes = crate::publisher::publish_many(&state.0.cfg, &platforms, &base).await?;
+
+    let mut results = Vec::new();
+    let mut ok_count = 0;
+    for o in &outcomes {
+        let region = o.region.as_str().to_string();
+        let task_id = insert_publish_task(
+            state,
+            o.platform,
+            &region,
+            &o.account,
+            if o.ok { "PUBLISHED" } else { "FAILED" },
+            json!({"file": file, "title": title, "content_asset_id": take_str(args, "content_asset_id")}),
+        )
+        .await?;
+        // 批量路径下任务已带终态，直接补 exit_log 与结果行
+        sqlx::query(
+            "UPDATE publishing_tasks SET exit_log=$1, finished_at=now(), error=$2 WHERE id=$3",
+        )
+        .bind(&o.log)
+        .bind(if o.ok {
+            None::<String>
+        } else {
+            Some(if o.timed_out { "TIMEOUT".to_string() } else { format!("EXIT_{}", o.exit_code.unwrap_or(-1)) })
+        })
+        .bind(&task_id)
+        .execute(state.pool())
+        .await?;
+        if o.ok {
+            ok_count += 1;
+            let rid = new_id();
+            sqlx::query(
+                "INSERT INTO publishing_results (id, publishing_task_id, published_at, metrics) VALUES ($1,$2,now(),$3)",
+            )
+            .bind(&rid)
+            .bind(&task_id)
+            .bind(json!({"region": region, "account": o.account}))
+            .execute(state.pool())
+            .await?;
+        }
+        results.push(json!({
+            "platform": o.platform,
+            "region": region,
+            "ok": o.ok,
+            "timed_out": o.timed_out,
+            "needs_login": o.needs_login,
+            "exit_code": o.exit_code,
+            "publishing_task_id": task_id,
+        }));
+    }
+
+    Ok(json!({
+        "output": format!("批量发布完成：{}/{} 成功", ok_count, outcomes.len()),
+        "ok_count": ok_count,
+        "total": outcomes.len(),
+        "results": results,
+        "mode": "auto_publish_many",
     }))
 }
 

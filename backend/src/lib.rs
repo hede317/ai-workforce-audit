@@ -7,6 +7,7 @@ pub mod config;
 pub mod error;
 pub mod models;
 pub mod orchestrator;
+pub mod publisher;
 pub mod routers;
 pub mod seed;
 pub mod state;

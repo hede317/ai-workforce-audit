@@ -369,28 +369,55 @@ pub async fn create_campaign(
 // ---------- 发布中心（内容ID追溯闭环的最后一环） ----------
 
 pub async fn list_publishing(State(state): State<AppState>, _user: AuthUser) -> ApiResult {
-    let tasks: Vec<(String, Option<String>, String, Option<String>, String, Option<Value>, String)> =
-        sqlx::query_as("SELECT id, content_asset_id, platform, account, status, payload, created_at::text FROM publishing_tasks ORDER BY created_at DESC LIMIT 100")
-            .fetch_all(state.pool())
-            .await?;
+    let tasks: Vec<(
+        String,
+        Option<String>,
+        String,
+        Option<String>,
+        String,
+        Option<Value>,
+        String,
+        String,
+        String,
+        Option<String>,
+    )> = sqlx::query_as(
+        "SELECT id, content_asset_id, platform, account, status, payload, created_at::text, \
+                COALESCE(region,'DOMESTIC'), COALESCE(mode,'HUMAN_QUEUE'), exit_log \
+         FROM publishing_tasks ORDER BY created_at DESC LIMIT 100",
+    )
+    .fetch_all(state.pool())
+    .await?;
     let ids: Vec<String> = tasks.iter().map(|(id, ..)| id.clone()).collect();
     let results: Vec<(String, Option<String>, Option<String>, Option<Value>, Option<String>)> =
         sqlx::query_as("SELECT publishing_task_id, platform_post_id, published_url, metrics, published_at::text FROM publishing_results WHERE publishing_task_id = ANY($1)")
             .bind(&ids)
             .fetch_all(state.pool())
             .await?;
+    let mut domestic = 0usize;
+    let mut overseas = 0usize;
     let items: Vec<Value> = tasks
         .into_iter()
-        .map(|(id, ca, platform, account, status, payload, created)| {
+        .map(|(id, ca, platform, account, status, payload, created, region, mode, exit_log)| {
             let rs: Vec<Value> = results
                 .iter()
                 .filter(|(tid, _, _, _, _)| *tid == id)
                 .map(|(_, pid, url, metrics, at)| json!({"platform_post_id": pid, "published_url": url, "metrics": metrics, "published_at": at}))
                 .collect();
-            json!({"id": id, "content_asset_id": ca, "platform": platform, "account": account, "status": status, "payload": payload, "created_at": created, "results": rs})
+            if region == "OVERSEAS" { overseas += 1 } else { domestic += 1 }
+            json!({
+                "id": id, "content_asset_id": ca, "platform": platform, "account": account,
+                "status": status, "payload": payload, "created_at": created,
+                "region": region, "mode": mode,
+                "exit_log_tail": exit_log.map(|s| s.chars().take(400).collect::<String>()),
+                "results": rs
+            })
         })
         .collect();
-    ok(json!({"items": items, "total": items.len()}))
+    ok(json!({
+        "items": items,
+        "total": items.len(),
+        "by_region": {"domestic": domestic, "overseas": overseas},
+    }))
 }
 
 /// 回填发布结果：人工发布（或API发布）后记录链接与表现 → 任务转 PUBLISHED

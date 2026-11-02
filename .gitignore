@@ -19,3 +19,6 @@ om.jar
 
 # 系统杂项
 .DS_Store
+
+# TS 增量构建缓存
+frontend/tsconfig.tsbuildinfo

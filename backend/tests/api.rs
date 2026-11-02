@@ -1389,3 +1389,131 @@ async fn t005_args_changed_error_code() {
     assert_eq!(st, StatusCode::CONFLICT);
     assert_eq!(v["error"]["code"], "ARGS_CHANGED", "{v}");
 }
+
+// ============ 自动发布（国内/海外分区） ============
+
+/// 平台清单必须真实返回国内 5 + 海外 2，且区域不混
+#[tokio::test]
+async fn publish_platforms_split_by_region() {
+    let _g = SERIAL.lock().await;
+    let (app, _) = setup().await;
+    let token = login(&app).await;
+    let (st, v) = send(
+        app,
+        req(
+            "POST",
+            "/api/v1/tools/publish.platforms/invoke",
+            Some(&token),
+            Some(json!({})),
+        ),
+    )
+    .await;
+    assert!(st.is_success(), "{v}");
+    let d = &v["data"];
+    assert_eq!(d["total"], 7, "{d}");
+    assert_eq!(d["domestic"].as_array().unwrap().len(), 5);
+    assert_eq!(d["overseas"].as_array().unwrap().len(), 2);
+    // 抖音必须在国内，YouTube 必须在海外
+    let dom_keys: Vec<&str> = d["domestic"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|x| x["key"].as_str().unwrap())
+        .collect();
+    assert!(dom_keys.contains(&"douyin"), "{dom_keys:?}");
+    let ovs_keys: Vec<&str> = d["overseas"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|x| x["key"].as_str().unwrap())
+        .collect();
+    assert!(ovs_keys.contains(&"youtube"), "{ovs_keys:?}");
+    assert!(!dom_keys.contains(&"youtube"));
+}
+
+/// 红线：publish.auto 与 publish.auto_many 都必须是 APPROVAL 级，直调必被拦
+#[tokio::test]
+async fn publish_auto_requires_approval() {
+    let _g = SERIAL.lock().await;
+    let (app, _) = setup().await;
+    let token = login(&app).await;
+    for tool in ["publish.auto", "publish.auto_many"] {
+        let (st, v) = send(
+            app.clone(),
+            req(
+                "POST",
+                &format!("/api/v1/tools/{tool}/invoke"),
+                Some(&token),
+                Some(json!({"platform":"douyin","platforms":["douyin"],"file":"/tmp/x.mp4","title":"t"})),
+            ),
+        )
+        .await;
+        assert_eq!(st, StatusCode::CONFLICT, "{tool} 应被审批门拦下: {v}");
+        assert!(
+            v["error"]["message"].as_str().unwrap().contains("APPROVAL_REQUIRED"),
+            "{tool}: {v}"
+        );
+    }
+}
+
+/// 未配置自动发布时，账号体检返回诚实 503，而不是假装成功
+#[tokio::test]
+async fn publish_check_account_not_configured() {
+    let _g = SERIAL.lock().await;
+    let (app, _) = setup().await;
+    let token = login(&app).await;
+    // setup 的 Config 来自 from_env；CI 下 FEATURE_AUTOPUBLISH 默认 0
+    if std::env::var("FEATURE_AUTOPUBLISH").as_deref() == Ok("1") {
+        return; // 本机开了自动发布时跳过此断言
+    }
+    let (st, v) = send(
+        app,
+        req(
+            "POST",
+            "/api/v1/tools/publish.check_account/invoke",
+            Some(&token),
+            Some(json!({"platform":"douyin"})),
+        ),
+    )
+    .await;
+    assert_eq!(st, StatusCode::SERVICE_UNAVAILABLE, "{v}");
+    assert_eq!(v["error"]["code"], "NOT_CONFIGURED", "{v}");
+}
+
+/// 发布中心必须按区域分组统计（国内/海外分开）
+#[tokio::test]
+async fn publishing_list_groups_by_region() {
+    let _g = SERIAL.lock().await;
+    let (app, pool) = setup().await;
+    let token = login(&app).await;
+    // 造两条任务：一条国内、一条海外
+    for (id, plat, region) in [
+        ("pt_dom_1", "douyin", "DOMESTIC"),
+        ("pt_ovs_1", "youtube", "OVERSEAS"),
+    ] {
+        sqlx::query(
+            "INSERT INTO publishing_tasks (id, platform, status, region, mode, payload) \
+             VALUES ($1,$2,'HUMAN_QUEUE',$3,'AUTO','{}'::jsonb) ON CONFLICT (id) DO NOTHING",
+        )
+        .bind(id)
+        .bind(plat)
+        .bind(region)
+        .execute(&pool)
+        .await
+        .unwrap();
+    }
+    let (st, v) = send(
+        app,
+        req("GET", "/api/v1/publishing", Some(&token), None),
+    )
+    .await;
+    assert!(st.is_success(), "{v}");
+    let br = &v["data"]["by_region"];
+    assert!(br["domestic"].as_u64().unwrap() >= 1, "{v}");
+    assert!(br["overseas"].as_u64().unwrap() >= 1, "{v}");
+    // 每条任务都要带 region 字段
+    for it in v["data"]["items"].as_array().unwrap() {
+        assert!(it["region"].is_string(), "缺少 region: {it}");
+        assert!(it["mode"].is_string(), "缺少 mode: {it}");
+    }
+}

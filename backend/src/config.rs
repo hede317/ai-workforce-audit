@@ -34,6 +34,18 @@ pub struct Config {
     pub ai_timezone: String,
     pub feature_botarmy: bool,
     pub feature_openmaic: bool,
+    /// 国内/海外自动发布（social-auto-upload 桥）
+    pub feature_autopublish: bool,
+    /// social-auto-upload 仓库根目录
+    pub sau_dir: String,
+    /// social-auto-upload 的 venv python 绝对路径
+    pub sau_python: String,
+    /// 发布默认账号名（对应 cookies/<platform>_<account>.json）
+    pub sau_default_account: String,
+    /// 单次发布子进程超时秒数
+    pub sau_timeout_secs: u64,
+    /// 海外平台（YouTube/TikTok）代理，留空=直连
+    pub sau_overseas_proxy: String,
 }
 
 fn envs(key: &str, default: &str) -> String {
@@ -78,7 +90,21 @@ impl Config {
             ai_timezone: envs("AWF_TIMEZONE", "Asia/Shanghai"),
             feature_botarmy: envs("FEATURE_BOTARMY", "0") == "1",
             feature_openmaic: envs("FEATURE_OPENMAIC", "0") == "1",
+            feature_autopublish: envs("FEATURE_AUTOPUBLISH", "0") == "1",
+            sau_dir: envs("SAU_DIR", ""),
+            sau_python: envs("SAU_PYTHON", ""),
+            sau_default_account: envs("SAU_DEFAULT_ACCOUNT", "creator"),
+            sau_timeout_secs: envs("SAU_TIMEOUT_SECS", "900").parse().unwrap_or(900),
+            sau_overseas_proxy: envs("SAU_OVERSEAS_PROXY", ""),
         }
+    }
+
+    /// 自动发布是否真正可用：开关打开 + 目录 + python 都配了
+    pub fn autopublish_available(&self) -> bool {
+        self.feature_autopublish
+            && !self.sau_dir.is_empty()
+            && !self.sau_python.is_empty()
+            && std::path::Path::new(&self.sau_python).exists()
     }
 
     pub fn ai_available(&self) -> bool {
